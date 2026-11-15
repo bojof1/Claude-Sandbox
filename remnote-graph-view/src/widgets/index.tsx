@@ -38,7 +38,8 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
   // Smaller map in the right sidebar that follows the open page
   await plugin.app.registerWidget('graph_sidebar', WidgetLocation.RightSidebar, {
-    dimensions: { height: '100%', width: '100%' },
+    // fill the whole sidebar (the SDK types only list numbers, but a percent works as CSS)
+    dimensions: { height: '100%' as any, width: '100%' },
     widgetTabTitle: 'Bubble Map',
     widgetTabIcon: `${plugin.rootURL}logo.svg`,
   });
