@@ -958,6 +958,23 @@ export function GraphView({ centerId, height, onOpened }: Props) {
               ))}
             </div>
           )}
+          {selNode.mentions.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <span style={{ opacity: 0.6 }}>Linked from:</span>
+              {selNode.mentions.map((m) => (
+                <div key={m.id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
+                  <span style={{ flex: 1 }}>{short(m.parentId ? nameOf(m.parentId) : 'a bullet', 40)}</span>
+                  <button
+                    style={{ ...btn(false), padding: '1px 8px' }}
+                    onClick={() => unlink(m.id, selNode.id)}
+                    title="Turn that link back into a plain word"
+                  >
+                    Unlink
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
             <button style={btn(true)} onClick={() => openRem(selNode.id)}>
               Open

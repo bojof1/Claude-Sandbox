@@ -18,6 +18,8 @@ export interface GNode {
   parentId: string | null;
   /** Rems this one points at with a [[link]] in its own text. */
   refs: string[];
+  /** Bullets that are only a [[link]] to this Rem (they are drawn as part of this bubble). */
+  mentions: { id: string; parentId: string | null }[];
   /** Set while the branch under this bubble is folded away: how many bubbles are hidden. */
   folded?: number;
   degree: number;
@@ -167,6 +169,7 @@ class Builder {
       back: l.back,
       parentId: rem.parent,
       refs: [...new Set([...referencedIds(rem.text), ...referencedIds(rem.backText)])],
+      mentions: [],
       degree: 0,
       isCenter,
       group: 0,
@@ -209,7 +212,12 @@ class Builder {
         kind = 'ref';
       this.addLink(a2, b2, kind);
     }
-    for (const id of [...this.nodes.keys()]) if (to(id) !== id) this.nodes.delete(id);
+    for (const id of [...this.nodes.keys()]) {
+      const t = to(id);
+      if (t === id) continue;
+      this.nodes.get(t)!.mentions.push({ id, parentId: this.parentOf.get(id) ?? null });
+      this.nodes.delete(id);
+    }
     // bullets that sat under a folded bullet now sit under the idea itself
     for (const n of this.nodes.values()) if (n.parentId) n.parentId = to(n.parentId);
   }
@@ -390,14 +398,22 @@ export async function removeReference(plugin: RNPlugin, fromId: string, toId: st
       out.pop();
     return out;
   };
-  const text = strip(from.text);
+  let text = strip(from.text);
   const back = strip(from.backText);
+  // if the link was all there was, leave the plain word behind instead of an empty bullet
+  if (text && !richTextToLabel(text) && !richTextToLabel(back) && (from.text || []).length) {
+    const to = (await plugin.rem.findOne(toId)) as any;
+    const word = to ? labelsOf(to).label : '';
+    if (word) text = [word];
+  }
   let changed = false;
-  if (text && text.length !== (from.text || []).length) {
+  const had = (rt: any[] | undefined) =>
+    !!rt && rt.some((el) => el && typeof el === 'object' && el.i === 'q' && el._id === toId);
+  if (text && had(from.text)) {
     await from.setText(text);
     changed = true;
   }
-  if (back && back.length !== (from.backText || []).length) {
+  if (back && had(from.backText)) {
     await from.setBackText(back);
     changed = true;
   }
