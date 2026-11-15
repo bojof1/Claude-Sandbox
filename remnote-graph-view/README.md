@@ -3,16 +3,18 @@
 See your notes as a map of bubbles and branches, like a hand-drawn mind map.
 
 - Each **bubble** is one Rem (one bullet). The **gold bubble** is the page you are on.
-- **Solid lines** follow your outline (parent and child). Each branch gets its own color.
+- **Solid lines** follow your outline (parent and child). Each branch gets its own color. Everything under the page shows, however deep.
 - **Dashed lines** are `[[links]]`. **Dotted lines** are tags.
-- **Click** a bubble, then pick **Open** or **Map from here** (redraws the map around it). **Double-click** opens it right away.
-- **Drag** to move a bubble. **Scroll** to zoom. **Fit** shows the whole map.
-- **Cards only** keeps your flashcards and the ideas they link to.
-- Click a line type at the bottom to hide or show it.
+- **Click** a bubble to go to that Rem. The map follows you there.
+- **Link bubbles**: click one bubble, then another, to add a `[[link]]` between them. The link is added to the end of the first bubble's text.
+- The map **updates by itself** a moment after you stop typing. The ↻ button redraws it right away.
+- **Drag** a bubble and let go to watch it spring back. **Scroll** or pinch to zoom. **Fit** shows the whole map.
 - **Point** at a bubble to read it in full and see what it touches.
 - Names hide when they would overlap, so the map stays readable. Zoom in to see more.
 - **Answers hidden** blanks out cloze answers so you can quiz yourself from the map.
-- **This page** maps the Rems around the open page. **Reach** sets how far out it goes. **Everything** maps your whole knowledge base (most connected Rems first).
+- **Cards only** keeps your flashcards and the ideas they link to.
+- Click a line type at the bottom to hide or show it.
+- **Reach** is how many steps to follow links and tags away from the page. **Everything** maps your whole knowledge base (most connected Rems first).
 - **Find** lights up bubbles that match what you type.
 
 ## How to open it in RemNote

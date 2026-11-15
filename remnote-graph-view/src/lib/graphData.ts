@@ -184,8 +184,8 @@ async function fillNames(plugin: RNPlugin, rems: RemLike[], names: Map<string, s
 }
 
 /**
- * "This page" map: start at one Rem and walk outward `depth` steps
- * through parents, children, [[links]] and tags.
+ * "This page" map. Everything nested under the page is always shown, however deep.
+ * `depth` (Reach) is how many steps to follow beyond that: [[links]], tags and parents.
  */
 export async function loadLocalGraph(
   plugin: RNPlugin,
@@ -196,72 +196,107 @@ export async function loadLocalGraph(
   const b = new Builder();
   const names = new Map<string, string>();
   const seen = new Set<string>([centerId]);
+  /** The page itself and everything nested below it. */
+  const under = new Set<string>([centerId]);
   let frontier = [centerId];
   let truncated = false;
 
-  for (let level = 0; level <= depth && frontier.length > 0; level++) {
-    const rems = (((await plugin.rem.findMany(frontier)) || []) as unknown as RemLike[]).filter(
-      Boolean
-    );
-    await fillNames(plugin, rems, names);
-    const next: string[] = [];
-    const last = level === depth;
+  for (let hop = 0; hop <= depth && frontier.length > 0; hop++) {
+    const nextHop: string[] = [];
+    const last = hop === depth;
+    let batch = frontier;
 
-    // things only RemNote can tell us: who links here, and tags
-    const extra = await Promise.all(
-      rems.map(async (r) => {
-        // at the outer edge we only ask for tags, so the map does not keep growing
-        const [back, tags, tagged] = await Promise.all([
-          opts.showRefs && !last ? safe(r.remsReferencingThis, r) : [],
-          opts.showTags ? safe(r.getTagRems, r) : [],
-          opts.showTags && !last ? safe(r.taggedRem, r) : [],
-        ]);
-        return {
-          back: back.map((x) => x._id),
-          tags: tags.map((x) => x._id),
-          tagged: tagged.map((x) => x._id),
-        };
-      })
-    );
+    // keep going down the outline inside this step, so nothing under the page is cut off
+    while (batch.length > 0) {
+      const rems = (((await plugin.rem.findMany(batch)) || []) as unknown as RemLike[]).filter(
+        Boolean
+      );
+      await fillNames(plugin, rems, names);
+      const deeper: string[] = [];
 
-    rems.forEach((rem, i) => {
-      // skip blank Rems, but always keep the center bubble
-      if (!labelsOf(rem, names).label && rem._id !== centerId) return;
-      if (b.nodes.size >= opts.maxNodes) {
-        truncated = true;
-        return;
-      }
-      b.addNode(rem._id, rem, names, rem._id === centerId);
+      // things only RemNote can tell us: who links here, and tags
+      const extra = await Promise.all(
+        rems.map(async (r) => {
+          // at the outer edge we only ask for tags, so the map does not keep growing
+          const [back, tags, tagged] = await Promise.all([
+            opts.showRefs && !last ? safe(r.remsReferencingThis, r) : [],
+            opts.showTags ? safe(r.getTagRems, r) : [],
+            opts.showTags && !last ? safe(r.taggedRem, r) : [],
+          ]);
+          return {
+            back: back.map((x) => x._id),
+            tags: tags.map((x) => x._id),
+            tagged: tagged.map((x) => x._id),
+          };
+        })
+      );
 
-      const neighbors: [string, LinkKind][] = [];
-      if (opts.showTree) {
-        if (rem.parent) neighbors.push([rem.parent, 'child']);
-        for (const c of rem.children || []) neighbors.push([c, 'child']);
-      }
-      if (opts.showRefs) {
-        for (const id of [...referencedIds(rem.text), ...referencedIds(rem.backText)])
-          neighbors.push([id, 'ref']);
-        for (const id of extra[i].back) neighbors.push([id, 'ref']);
-      }
-      if (opts.showTags) {
-        for (const id of [...extra[i].tags, ...extra[i].tagged]) neighbors.push([id, 'tag']);
-      }
-
-      for (const [id, kind] of neighbors) {
-        b.addLink(rem._id, id, kind);
-        if (!last && !seen.has(id)) {
-          seen.add(id);
-          next.push(id);
+      rems.forEach((rem, i) => {
+        const isUnder = under.has(rem._id);
+        const kids = rem.children || [];
+        // skip blank Rems, unless they hold part of the page's outline together
+        if (!labelsOf(rem, names).label && !(isUnder && (kids.length > 0 || rem._id === centerId)))
+          return;
+        if (b.nodes.size >= opts.maxNodes) {
+          truncated = true;
+          return;
         }
-      }
-    });
+        b.addNode(rem._id, rem, names, rem._id === centerId);
 
-    frontier = next;
+        const neighbors: [string, LinkKind][] = [];
+        if (opts.showTree) {
+          if (rem.parent) neighbors.push([rem.parent, 'child']);
+          for (const c of kids) {
+            if (!isUnder) {
+              neighbors.push([c, 'child']);
+              continue;
+            }
+            b.addLink(rem._id, c, 'child');
+            under.add(c);
+            if (!seen.has(c)) {
+              seen.add(c);
+              deeper.push(c);
+            }
+          }
+        }
+        if (opts.showRefs) {
+          for (const id of [...referencedIds(rem.text), ...referencedIds(rem.backText)])
+            neighbors.push([id, 'ref']);
+          for (const id of extra[i].back) neighbors.push([id, 'ref']);
+        }
+        if (opts.showTags) {
+          for (const id of [...extra[i].tags, ...extra[i].tagged]) neighbors.push([id, 'tag']);
+        }
+
+        for (const [id, kind] of neighbors) {
+          b.addLink(rem._id, id, kind);
+          if (!last && !seen.has(id)) {
+            seen.add(id);
+            nextHop.push(id);
+          }
+        }
+      });
+
+      batch = deeper;
+    }
+
+    frontier = nextHop;
   }
 
   const data = b.finish(truncated);
   colorByBranch(data, centerId);
   return data;
+}
+
+/** Add a [[link]] from one Rem to another by putting it at the end of the first Rem's text. */
+export async function addReference(plugin: RNPlugin, fromId: string, toId: string) {
+  if (fromId === toId) return 'same';
+  const from = (await plugin.rem.findOne(fromId)) as any;
+  if (!from) return 'missing';
+  const text: any[] = from.text || [];
+  if ([...referencedIds(from.text), ...referencedIds(from.backText)].includes(toId)) return 'exists';
+  await from.setText([...text, ' ', { i: 'q', _id: toId }]);
+  return 'added';
 }
 
 /** Give each branch coming off the center its own color number. */

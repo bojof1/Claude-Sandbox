@@ -29,7 +29,7 @@ async function onActivate(plugin: ReactRNPlugin) {
   await plugin.settings.registerNumberSetting({
     id: 'max-nodes',
     title: 'Most bubbles to draw (lower = faster)',
-    defaultValue: 400,
+    defaultValue: 600,
   });
 
   // Big map in a pop-up window

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { usePlugin, useTrackerPlugin } from '@remnote/plugin-sdk';
+import { AppEvents, useAPIEventListener, usePlugin, useTrackerPlugin } from '@remnote/plugin-sdk';
 import {
   forceCollide,
   forceLink,
@@ -13,6 +13,7 @@ import { select } from 'd3-selection';
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom';
 import { drag } from 'd3-drag';
 import {
+  addReference,
   loadGlobalGraph,
   loadLocalGraph,
   type GLink,
@@ -61,24 +62,49 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const relabelRef = useRef<() => void>(() => {});
   const onOpenedRef = useRef(onOpened);
   onOpenedRef.current = onOpened;
+  /** Where each bubble was last drawn, so a refresh does not shuffle the map. */
+  const posRef = useRef(new Map<string, { x: number; y: number }>());
+  const tfRef = useRef<ZoomTransform>(zoomIdentity);
+  const drawnKeyRef = useRef('');
 
   const [mode, setMode] = useState<Mode>('local');
-  const [depth, setDepth] = useState(2);
+  const [depth, setDepth] = useState(1);
   const [search, setSearch] = useState('');
   const [hideAnswers, setHideAnswers] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [peek, setPeek] = useState('');
+  const [note, setNote] = useState('');
   const [kinds, setKinds] = useState<Record<LinkKind, boolean>>({ child: true, ref: true, tag: true });
   const [cardsOnly, setCardsOnly] = useState(false);
-  /** A bubble picked with "Map from here". It replaces the open page as the center. */
-  const [focusId, setFocusId] = useState<string | null>(null);
-  const [selected, setSelected] = useState<{ id: string; label: string; hiddenLabel: string } | null>(null);
-  const center = focusId ?? centerId;
+  const [linkMode, setLinkMode] = useState(false);
+  const [linkFrom, setLinkFrom] = useState<{ id: string; label: string } | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const [data, setData] = useState<GraphData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // moving to another page in RemNote goes back to following the open page
-  useEffect(() => {
-    setFocusId(null);
-  }, [centerId]);
+  // live values the drawing code reads without redrawing everything
+  const live = useRef({ hideAnswers, search, linkMode, linkFrom });
+  live.current = { hideAnswers, search, linkMode, linkFrom };
+
+  const showTree = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tree')) ?? true;
+  const showRefs = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-refs')) ?? true;
+  const showTags = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tags')) ?? true;
+  const maxNodes = useTrackerPlugin((rp) => rp.settings.getSetting<number>('max-nodes')) ?? 600;
+
+  // Redraw shortly after anything in the notes changes (waits for a pause in typing)
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const bump = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setRefresh((n) => n + 1), 1200);
+  };
+  useAPIEventListener(AppEvents.GlobalRemChanged, undefined, bump);
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const flash = (text: string) => {
+    setNote(text);
+    setTimeout(() => setNote(''), 3500);
+  };
 
   const openRem = async (id: string) => {
     const rem = await plugin.rem.findOne(id);
@@ -87,41 +113,55 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       onOpenedRef.current?.();
     }
   };
-  const openRemRef = useRef(openRem);
-  openRemRef.current = openRem;
-  const [data, setData] = useState<GraphData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // live values the drawing code reads without redrawing everything
-  const live = useRef({ hideAnswers, search });
-  live.current = { hideAnswers, search };
-
-  const showTree = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tree')) ?? true;
-  const showRefs = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-refs')) ?? true;
-  const showTags = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tags')) ?? true;
-  const maxNodes = useTrackerPlugin((rp) => rp.settings.getSetting<number>('max-nodes')) ?? 400;
+  /** What a click on a bubble does: open it, or (in link mode) pick the two ends of a new link. */
+  const onBubble = async (n: GNode) => {
+    const { linkMode: on, linkFrom: from } = live.current;
+    if (!on) return openRem(n.id);
+    if (!from) return setLinkFrom({ id: n.id, label: n.label });
+    setLinkFrom(null);
+    setLinkMode(false);
+    try {
+      const result = await addReference(plugin, from.id, n.id);
+      flash(
+        result === 'added'
+          ? `Linked "${short(from.label, 20)}" to "${short(n.label, 20)}".`
+          : result === 'exists'
+          ? 'Those two are already linked.'
+          : 'Pick two different bubbles.'
+      );
+      setRefresh((r) => r + 1);
+    } catch (e: any) {
+      flash(`Could not add the link: ${String(e?.message || e)}`);
+    }
+  };
+  const onBubbleRef = useRef(onBubble);
+  onBubbleRef.current = onBubble;
 
   // 1) Load the bubbles and lines
+  const loadingRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
     async function run() {
-      if (mode === 'local' && !center) {
+      if (mode === 'local' && !centerId) {
         setData(null);
         return;
       }
+      if (loadingRef.current) return bump(); // one load at a time; try again in a moment
+      loadingRef.current = true;
       setLoading(true);
       setError(null);
       try {
         const opts = { showTree, showRefs, showTags, maxNodes: Math.max(10, maxNodes) };
         const d =
           mode === 'local'
-            ? await loadLocalGraph(plugin, center!, depth, opts)
+            ? await loadLocalGraph(plugin, centerId!, depth, opts)
             : await loadGlobalGraph(plugin, opts);
         if (!cancelled) setData(d);
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message || e));
       } finally {
+        loadingRef.current = false;
         if (!cancelled) setLoading(false);
       }
     }
@@ -129,7 +169,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [plugin, mode, depth, center, showTree, showRefs, showTags, maxNodes]);
+  }, [plugin, mode, depth, centerId, showTree, showRefs, showTags, maxNodes, refresh]);
 
   // 1b) Apply the on-screen switches (line types, cards only) without reloading
   const view = useMemo<GraphData | null>(() => {
@@ -164,16 +204,36 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   useEffect(() => {
     const svgEl = svgRef.current;
     if (!svgEl || !view) return;
-    const data = view;
-    setSelected(null);
     const svg = select(svgEl);
     svg.selectAll('*').remove();
 
     const box = svgEl.getBoundingClientRect();
     const width = box.width || 600;
     const h = box.height || 400;
-    const nodes: GNode[] = data.nodes.map((n) => ({ ...n }));
-    const links: GLink[] = data.links.map((l) => ({ ...l }));
+
+    // same page as last time = a refresh: keep bubbles where they were and keep the zoom
+    const key = `${mode}|${centerId}`;
+    const isRefresh = drawnKeyRef.current === key && posRef.current.size > 0;
+    drawnKeyRef.current = key;
+    if (!isRefresh) posRef.current = new Map();
+    const old = isRefresh ? posRef.current : new Map<string, { x: number; y: number }>();
+
+    const links: GLink[] = view.links.map((l) => ({ ...l }));
+    const nodes: GNode[] = view.nodes.map((n) => ({ ...n, ...(old.get(n.id) || {}) }));
+    if (isRefresh) {
+      // new bubbles start next to something they are joined to, then drift into place
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      for (const l of links) {
+        const a = byId.get(l.source as string);
+        const b = byId.get(l.target as string);
+        if (!a || !b) continue;
+        const [fresh, anchor] = a.x === undefined ? [a, b] : [b, a];
+        if (fresh.x === undefined && anchor.x !== undefined) {
+          fresh.x = anchor.x + (Math.random() - 0.5) * 40;
+          fresh.y = anchor.y! + (Math.random() - 0.5) * 40;
+        }
+      }
+    }
     const big = nodes.length > 150;
 
     const root = svg.append('g');
@@ -235,10 +295,12 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       .force('x', forceX(width / 2).strength(0.04))
       .force('y', forceY(h / 2).strength(0.04))
       .force('collide', forceCollide<GNode>().radius((n) => radius(n) + (big ? 8 : 16)))
+      .velocityDecay(0.3)
       .stop();
     simRef.current = sim;
-    // settle the layout before showing it, so it does not jump around
-    sim.tick(big ? 180 : 260);
+    // A new map gets a head start, then you watch it finish settling.
+    // A refresh skips the head start so the bubbles you know stay put.
+    if (!isRefresh) sim.tick(big ? 90 : 60);
 
     // line colors follow the bubble farther from the center
     linkSel.attr('stroke', (l) => {
@@ -315,6 +377,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
         return `M${s.x},${s.y}Q${mx},${my} ${t.x},${t.y}`;
       });
       nodeSel.attr('transform', (n) => `translate(${n.x},${n.y})`);
+      for (const n of nodes) posRef.current.set(n.id, { x: n.x!, y: n.y! });
     };
 
     let ticks = 0;
@@ -322,7 +385,12 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       place();
       if (++ticks % 8 === 0) relabel();
     });
-    sim.on('end', relabel);
+    let userZoomed = false;
+    sim.on('end', () => {
+      // once it has settled, frame the whole map (unless you already zoomed yourself)
+      if (!isRefresh && !userZoomed) fit();
+      relabel();
+    });
 
     nodeSel
       .on('mouseenter', (_e, n) => {
@@ -344,15 +412,13 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       })
       .on('click', (e, n) => {
         if ((e as any).defaultPrevented) return; // was a drag
-        if ((e as MouseEvent).metaKey || (e as MouseEvent).ctrlKey) openRemRef.current(n.id);
-        else setSelected({ id: n.id, label: n.label, hiddenLabel: n.hiddenLabel });
-      })
-      .on('dblclick', (_e, n) => openRemRef.current(n.id));
+        onBubbleRef.current(n);
+      });
 
     nodeSel.call(
       drag<SVGGElement, GNode>()
         .on('start', (e, n) => {
-          if (!e.active) sim.alphaTarget(0.2).restart();
+          if (!e.active) sim.alphaTarget(0.25).restart();
           n.fx = n.x;
           n.fy = n.y;
         })
@@ -360,16 +426,20 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           n.fx = e.x;
           n.fy = e.y;
         })
-        .on('end', (e) => {
+        .on('end', (e, n) => {
           if (!e.active) sim.alphaTarget(0);
-          // the bubble stays where you drop it
+          // let go: the bubble springs back and its neighbors sway with it
+          n.fx = null;
+          n.fy = null;
         })
     );
 
     const z = zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.05, 8])
       .on('zoom', (e) => {
+        if (e.sourceEvent) userZoomed = true;
         tf = e.transform;
+        tfRef.current = tf;
         root.attr('transform', tf.toString());
         relabel();
       });
@@ -394,11 +464,15 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     fitRef.current = fit;
 
     place();
-    fit();
+    if (isRefresh) svg.call(z.transform, tfRef.current);
+    else fit();
+    // the motion: let the map finish settling on screen
+    sim.alpha(isRefresh ? 0.25 : 0.5).restart();
 
     return () => {
       sim.stop();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, plugin]);
 
   // 3) Find: light up bubbles whose text matches. Also refresh names when answers are hidden or shown.
@@ -410,12 +484,16 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     select(svgEl)
       .selectAll<SVGCircleElement, GNode>('g.gv-node circle')
       .attr('fill', (n) => (hit(n) ? MATCH : colorOf(n)))
-      .attr('r', (n) => (hit(n) ? radius(n) + 4 : radius(n)));
+      .attr('r', (n) => (hit(n) ? radius(n) + 4 : radius(n)))
+      .attr('stroke', (n) =>
+        linkFrom?.id === n.id ? '#ffffff' : n.isCenter ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.35)'
+      )
+      .attr('stroke-width', (n) => (linkFrom?.id === n.id ? 4 : n.isCenter ? 2.5 : 1));
     relabelRef.current();
-  }, [search, hideAnswers, view]);
+  }, [search, hideAnswers, view, linkFrom]);
 
   const btn = (active: boolean): React.CSSProperties => ({
-    padding: '3px 9px',
+    padding: '5px 10px',
     borderRadius: 999,
     border: '1px solid rgba(138,147,163,0.5)',
     background: active ? '#4C9AFF' : 'transparent',
@@ -427,17 +505,23 @@ export function GraphView({ centerId, height, onOpened }: Props) {
 
   const anyCloze = !!data?.nodes.some((n) => n.hasCloze);
   const anyCard = !!data?.nodes.some((n) => n.isCard);
-  const status = loading
+  const status = note
+    ? note
+    : linkMode
+    ? linkFrom
+      ? `Now click the bubble to link "${short(linkFrom.label, 24)}" to.`
+      : 'Link mode: click the bubble the link starts from.'
+    : loading && !data
     ? 'Building your map…'
     : error
     ? `Something went wrong: ${error}`
-    : mode === 'local' && !center
+    : mode === 'local' && !centerId
     ? 'Open a page (or click into a Rem) to see its map.'
     : view && view.nodes.length <= 1
     ? 'Nothing is connected here yet. Add bullets under this page, or [[links]] and tags, and they will show up.'
     : view
     ? `${view.nodes.length} bubbles, ${view.links.length} lines${
-        view.truncated ? '. Showing the most connected ones (raise "Most bubbles" in settings to see more)' : ''
+        view.truncated ? '. Some are left out to keep it fast (raise "Most bubbles" in settings to see all)' : ''
       }`
     : '';
 
@@ -460,13 +544,16 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           Everything
         </button>
         {mode === 'local' && (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="How far out from this page to look">
+          <span
+            style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+            title="How many steps to follow links and tags away from this page"
+          >
             Reach
-            <button style={btn(false)} onClick={() => setDepth((d) => Math.max(1, d - 1))}>
+            <button style={btn(false)} onClick={() => setDepth((d) => Math.max(0, d - 1))}>
               −
             </button>
             {depth}
-            <button style={btn(false)} onClick={() => setDepth((d) => Math.min(4, d + 1))}>
+            <button style={btn(false)} onClick={() => setDepth((d) => Math.min(3, d + 1))}>
               +
             </button>
           </span>
@@ -478,13 +565,23 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           style={{
             flex: '1 1 80px',
             minWidth: 60,
-            padding: '3px 8px',
+            padding: '5px 10px',
             borderRadius: 999,
             border: '1px solid rgba(138,147,163,0.5)',
             background: 'transparent',
             color: 'inherit',
           }}
         />
+        <button
+          style={btn(linkMode)}
+          onClick={() => {
+            setLinkMode((v) => !v);
+            setLinkFrom(null);
+          }}
+          title="Link two bubbles: click one, then the other"
+        >
+          {linkMode ? 'Cancel link' : 'Link bubbles'}
+        </button>
         {anyCloze && (
           <button
             style={btn(hideAnswers)}
@@ -503,41 +600,27 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             Cards only
           </button>
         )}
-        {focusId && (
-          <button style={btn(false)} onClick={() => setFocusId(null)} title="Go back to the page that is open">
-            Back to open page
-          </button>
-        )}
         <button style={btn(false)} onClick={() => fitRef.current()} title="Zoom to fit the whole map">
           Fit
+        </button>
+        <button style={btn(false)} onClick={() => setRefresh((n) => n + 1)} title="Redraw the map now">
+          ↻
         </button>
         <button style={btn(showHelp)} onClick={() => setShowHelp((v) => !v)} title="How this works">
           ?
         </button>
       </div>
-      {selected && !peek ? (
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '0 8px', minHeight: 24 }}>
-          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {hideAnswers ? selected.hiddenLabel : selected.label}
-          </span>
-          <button style={btn(true)} onClick={() => openRem(selected.id)}>
-            Open
-          </button>
-          <button
-            style={btn(false)}
-            onClick={() => {
-              setFocusId(selected.id);
-              setMode('local');
-            }}
-            title="Redraw the map around this bubble"
-          >
-            Map from here
-          </button>
-        </div>
-      ) : (
-        <div style={{ padding: '0 8px', opacity: 0.7, minHeight: 24 }}>{peek || status}</div>
-      )}
-      <svg ref={svgRef} style={{ flex: 1, width: '100%', minHeight: 200 }} />
+      <div
+        style={{
+          padding: '0 8px',
+          opacity: note || linkMode ? 1 : 0.7,
+          minHeight: 20,
+          fontWeight: note || linkMode ? 600 : 400,
+        }}
+      >
+        {peek || status}
+      </div>
+      <svg ref={svgRef} style={{ flex: 1, width: '100%', minHeight: 200, touchAction: 'none' }} />
       <div style={{ display: 'flex', gap: 14, padding: '4px 8px', opacity: 0.75, flexWrap: 'wrap' }}>
         <span style={{ opacity: 0.8 }}>Lines (click to hide):</span>
         {(
@@ -572,7 +655,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             position: 'absolute',
             top: 44,
             right: 8,
-            width: 290,
+            width: 300,
             maxWidth: '90%',
             padding: 12,
             borderRadius: 10,
@@ -587,13 +670,15 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <li>Each bubble is one Rem (one bullet). The gold bubble is the page you are on.</li>
             <li>Solid lines follow your outline. Each branch has its own color.</li>
             <li>Dashed lines are [[links]]. Dotted lines are tags.</li>
-            <li>Click a bubble, then pick Open or "Map from here". Double-click opens it right away.</li>
-            <li>Drag a bubble to move it. Scroll to zoom. "Fit" shows the whole map.</li>
-            <li>"Cards only" keeps your flashcards and the ideas they link to.</li>
+            <li>Click a bubble to go to it. The map follows you there.</li>
+            <li>"Link bubbles": click one bubble, then another, to add a [[link]] between them.</li>
+            <li>The map updates by itself a moment after you stop typing.</li>
+            <li>Drag a bubble and let go to watch it spring back. Scroll or pinch to zoom.</li>
             <li>Point at a bubble to read it in full and see what it touches.</li>
             <li>Names hide when they would overlap. Zoom in to see more.</li>
             <li>"Answers hidden" blanks out cloze answers so you can quiz yourself.</li>
-            <li>"Reach" sets how far from this page the map goes.</li>
+            <li>"Cards only" keeps your flashcards and the ideas they link to.</li>
+            <li>"Reach" is how many steps to follow links and tags away from this page.</li>
           </ul>
         </div>
       )}

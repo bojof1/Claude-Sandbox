@@ -6,17 +6,17 @@
   "repoUrl": "https://github.com/bojof1/Claude-Sandbox",
   "version": {
     "major": 0,
-    "minor": 2,
+    "minor": 3,
     "patch": 0
   },
   "theme": [],
-  "enableOnMobile": false,
+  "enableOnMobile": true,
   "description": "See your notes as a map of bubbles and branches. Each Rem is a bubble, lines show your outline, links and tags, and a click opens the Rem.",
   "requestNative": false,
   "requiredScopes": [
     {
       "type": "All",
-      "level": "Read"
+      "level": "ReadCreateModifyDelete"
     }
   ]
 }
