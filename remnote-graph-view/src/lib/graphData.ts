@@ -103,8 +103,18 @@ export function referencedIds(rt: RichTextInterface | undefined): string[] {
   return ids;
 }
 
+/** If a Rem is nothing but one [[link]], return the id it points at. */
+function soleReference(rt: RichTextInterface | undefined): string | undefined {
+  if (!rt) return undefined;
+  const parts = (rt as any[]).filter((el) => !(typeof el === 'string' && !el.trim()));
+  return parts.length === 1 && parts[0]?.i === 'q' && parts[0]._id ? parts[0]._id : undefined;
+}
+
 function labelsOf(rem: RemLike, names?: Map<string, string>) {
   const rt = richTextToLabel(rem.text, names) ? rem.text : rem.backText;
+  // RemNote keeps hidden helper Rems (saved searches) that start with "query:"; leave them out
+  if (richTextToLabel(rt, names).startsWith('query:'))
+    return { label: '', hiddenLabel: '', hasCloze: false, isCard: false };
   return {
     label: richTextToLabel(rt, names),
     hiddenLabel: richTextToLabel(rt, names, true),
@@ -120,9 +130,15 @@ class Builder {
   nodes = new Map<string, GNode>();
   linkKeys = new Set<string>();
   links: GLink[] = [];
+  /** Bullets that are only a [[link]]: bullet id -> the Rem it points at. */
+  alias = new Map<string, string>();
+  parentOf = new Map<string, string | null>();
 
   addNode(id: string, rem: RemLike, names: Map<string, string>, isCenter = false) {
     if (this.nodes.has(id)) return;
+    this.parentOf.set(id, rem.parent);
+    const target = soleReference(rem.text);
+    if (target && !isCenter && !rem.backText?.length) this.alias.set(id, target);
     const l = labelsOf(rem, names);
     this.nodes.set(id, {
       id,
@@ -144,7 +160,39 @@ class Builder {
     this.links.push({ source: a, target: b, kind });
   }
 
+  /**
+   * A bullet that is only a [[link]] (say, a bullet that just says [[DMSO]]) is folded into
+   * the bubble it points at. So each idea is one bubble, joined to every place that mentions it.
+   */
+  private foldAliases() {
+    const to = (id: string) => {
+      let cur = id;
+      for (let i = 0; i < 5; i++) {
+        const next = this.alias.get(cur);
+        if (!next || !this.nodes.has(next) || !this.nodes.has(cur)) break;
+        cur = next;
+      }
+      return cur;
+    };
+    const old = this.links;
+    this.links = [];
+    this.linkKeys = new Set();
+    for (const l of old) {
+      const a = l.source as string;
+      const b = l.target as string;
+      const a2 = to(a);
+      const b2 = to(b);
+      let kind = l.kind;
+      // the line from the bullet's parent now points at the idea itself, so it is a link line
+      if (kind === 'child' && ((a2 !== a && this.parentOf.get(a) === b) || (b2 !== b && this.parentOf.get(b) === a)))
+        kind = 'ref';
+      this.addLink(a2, b2, kind);
+    }
+    for (const id of [...this.nodes.keys()]) if (to(id) !== id) this.nodes.delete(id);
+  }
+
   finish(truncated: boolean): GraphData {
+    this.foldAliases();
     // only keep lines whose two ends are both bubbles on the map
     const links = this.links.filter(
       (l) => this.nodes.has(l.source as string) && this.nodes.has(l.target as string)
@@ -312,13 +360,22 @@ function colorByBranch(data: GraphData, centerId: string) {
   }
   const group = new Map<string, number>([[centerId, 0]]);
   let nextGroup = 1;
-  let queue = [centerId];
+  // If the page has a single main branch, walk down it and start the colors where it fans out.
+  let split = centerId;
+  for (let i = 0; i < 6; i++) {
+    const open = (near.get(split) || []).filter((n) => !group.has(n));
+    const forks = open.filter((n) => (near.get(n) || []).length > 1);
+    if (forks.length !== 1 || open.length > 3) break;
+    for (const n of open) group.set(n, nextGroup++);
+    split = forks[0];
+  }
+  let queue = [split];
   while (queue.length) {
     const after: string[] = [];
     for (const id of queue) {
       for (const n of near.get(id) || []) {
         if (group.has(n)) continue;
-        group.set(n, id === centerId ? nextGroup++ : group.get(id)!);
+        group.set(n, id === split ? nextGroup++ : group.get(id)!);
         after.push(n);
       }
     }
