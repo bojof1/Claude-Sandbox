@@ -1,12 +1,21 @@
 import type { RNPlugin, RichTextInterface } from '@remnote/plugin-sdk';
 
-export type LinkKind = 'child' | 'ref';
+/** child = outline (parent and child), ref = [[link]], tag = RemNote tag */
+export type LinkKind = 'child' | 'ref' | 'tag';
 
 export interface GNode {
   id: string;
+  /** Full text of the Rem. */
   label: string;
+  /** Same text with cloze answers swapped for a blank. */
+  hiddenLabel: string;
+  hasCloze: boolean;
+  /** True when the Rem is a flashcard (a cloze, or a front and a back). */
+  isCard: boolean;
   degree: number;
   isCenter: boolean;
+  /** Which branch (color) the bubble belongs to. */
+  group: number;
   // filled in by d3-force
   x?: number;
   y?: number;
@@ -31,6 +40,7 @@ export interface GraphData {
 export interface GraphOptions {
   showTree: boolean; // parent-child lines
   showRefs: boolean; // reference lines
+  showTags: boolean; // tag lines
   maxNodes: number;
 }
 
@@ -40,21 +50,50 @@ type RemLike = {
   children?: string[];
   text?: RichTextInterface;
   backText?: RichTextInterface;
+  remsReferencingThis?: () => Promise<RemLike[]>;
+  getTagRems?: () => Promise<RemLike[]>;
+  taggedRem?: () => Promise<RemLike[]>;
 };
 
-/** Turn RemNote rich text into a plain label, without extra API calls. */
-export function richTextToLabel(rt: RichTextInterface | undefined): string {
+const BLANK = '[…]';
+
+/**
+ * Turn RemNote rich text into plain text.
+ * - names: text of other Rems, used to fill in [[links]]
+ * - hideCloze: swap cloze answers for a blank
+ */
+export function richTextToLabel(
+  rt: RichTextInterface | undefined,
+  names?: Map<string, string>,
+  hideCloze = false
+): string {
   if (!rt) return '';
   let out = '';
+  let lastWasBlank = false;
   for (const el of rt as any[]) {
-    if (typeof el === 'string') out += el;
-    else if (el && typeof el.text === 'string') out += el.text;
-    else if (el && el.i === 'x' && typeof el.text === 'string') out += el.text; // LaTeX
+    if (typeof el === 'string') {
+      out += el;
+      lastWasBlank = false;
+      continue;
+    }
+    if (!el || typeof el !== 'object') continue;
+    if (hideCloze && el.cId) {
+      if (!lastWasBlank) out += BLANK;
+      lastWasBlank = true;
+      continue;
+    }
+    lastWasBlank = false;
+    if (el.i === 'q' && el._id) out += names?.get(el._id) ?? '';
+    else if (typeof el.text === 'string') out += el.text;
   }
   return out.replace(/\s+/g, ' ').trim();
 }
 
-/** Ids of Rems referenced inside rich text ([[links]] and tags written inline). */
+function hasCloze(rt: RichTextInterface | undefined): boolean {
+  return !!rt && (rt as any[]).some((el) => el && typeof el === 'object' && el.cId);
+}
+
+/** Ids of Rems linked inside rich text with [[ ]]. */
 export function referencedIds(rt: RichTextInterface | undefined): string[] {
   if (!rt) return [];
   const ids: string[] = [];
@@ -64,10 +103,17 @@ export function referencedIds(rt: RichTextInterface | undefined): string[] {
   return ids;
 }
 
-function labelOf(rem: RemLike): string {
-  const front = richTextToLabel(rem.text);
-  if (front) return front;
-  return richTextToLabel(rem.backText);
+function labelsOf(rem: RemLike, names?: Map<string, string>) {
+  const rt = richTextToLabel(rem.text, names) ? rem.text : rem.backText;
+  return {
+    label: richTextToLabel(rt, names),
+    hiddenLabel: richTextToLabel(rt, names, true),
+    hasCloze: hasCloze(rt),
+    isCard:
+      hasCloze(rem.text) ||
+      hasCloze(rem.backText) ||
+      (!!richTextToLabel(rem.text, names) && !!richTextToLabel(rem.backText, names)),
+  };
 }
 
 class Builder {
@@ -75,8 +121,19 @@ class Builder {
   linkKeys = new Set<string>();
   links: GLink[] = [];
 
-  addNode(id: string, label: string, isCenter = false) {
-    if (!this.nodes.has(id)) this.nodes.set(id, { id, label, degree: 0, isCenter });
+  addNode(id: string, rem: RemLike, names: Map<string, string>, isCenter = false) {
+    if (this.nodes.has(id)) return;
+    const l = labelsOf(rem, names);
+    this.nodes.set(id, {
+      id,
+      label: l.label || 'Untitled',
+      hiddenLabel: l.hiddenLabel || 'Untitled',
+      hasCloze: l.hasCloze,
+      isCard: l.isCard,
+      degree: 0,
+      isCenter,
+      group: 0,
+    });
   }
 
   addLink(a: string, b: string, kind: LinkKind) {
@@ -88,7 +145,7 @@ class Builder {
   }
 
   finish(truncated: boolean): GraphData {
-    // only keep lines whose two ends are both dots on the map
+    // only keep lines whose two ends are both bubbles on the map
     const links = this.links.filter(
       (l) => this.nodes.has(l.source as string) && this.nodes.has(l.target as string)
     );
@@ -100,9 +157,35 @@ class Builder {
   }
 }
 
+async function safe<T>(fn: (() => Promise<T[]>) | undefined, self: unknown): Promise<T[]> {
+  if (!fn) return [];
+  try {
+    return (await fn.call(self)) || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Look up the text of Rems that are only mentioned in [[links]], so labels read in full. */
+async function fillNames(plugin: RNPlugin, rems: RemLike[], names: Map<string, string>) {
+  const missing = new Set<string>();
+  for (const r of rems) {
+    for (const id of [...referencedIds(r.text), ...referencedIds(r.backText)]) {
+      if (!names.has(id)) missing.add(id);
+    }
+  }
+  if (missing.size === 0) return;
+  try {
+    const found = ((await plugin.rem.findMany([...missing])) || []) as unknown as RemLike[];
+    for (const r of found) if (r) names.set(r._id, labelsOf(r).label);
+  } catch {
+    // labels just stay shorter
+  }
+}
+
 /**
- * "This page" graph: start at one Rem and walk outward `depth` steps
- * through parents, children and references (like Obsidian's local graph).
+ * "This page" map: start at one Rem and walk outward `depth` steps
+ * through parents, children, [[links]] and tags.
  */
 export async function loadLocalGraph(
   plugin: RNPlugin,
@@ -111,37 +194,44 @@ export async function loadLocalGraph(
   opts: GraphOptions
 ): Promise<GraphData> {
   const b = new Builder();
+  const names = new Map<string, string>();
   const seen = new Set<string>([centerId]);
   let frontier = [centerId];
   let truncated = false;
 
   for (let level = 0; level <= depth && frontier.length > 0; level++) {
-    const rems = ((await plugin.rem.findMany(frontier)) || []) as unknown as RemLike[];
+    const rems = (((await plugin.rem.findMany(frontier)) || []) as unknown as RemLike[]).filter(
+      Boolean
+    );
+    await fillNames(plugin, rems, names);
     const next: string[] = [];
+    const last = level === depth;
 
-    const backlinks: string[][] = await Promise.all(
+    // things only RemNote can tell us: who links here, and tags
+    const extra = await Promise.all(
       rems.map(async (r) => {
-        if (!opts.showRefs || level === depth) return [];
-        try {
-          const full = await plugin.rem.findOne(r._id);
-          const refs = (await full?.remsReferencingThis()) || [];
-          return refs.map((x) => x._id);
-        } catch {
-          return [];
-        }
+        // at the outer edge we only ask for tags, so the map does not keep growing
+        const [back, tags, tagged] = await Promise.all([
+          opts.showRefs && !last ? safe(r.remsReferencingThis, r) : [],
+          opts.showTags ? safe(r.getTagRems, r) : [],
+          opts.showTags && !last ? safe(r.taggedRem, r) : [],
+        ]);
+        return {
+          back: back.map((x) => x._id),
+          tags: tags.map((x) => x._id),
+          tagged: tagged.map((x) => x._id),
+        };
       })
     );
 
     rems.forEach((rem, i) => {
-      if (!rem) return;
-      const label = labelOf(rem);
-      // skip blank Rems, but always keep the center dot
-      if (!label && rem._id !== centerId) return;
+      // skip blank Rems, but always keep the center bubble
+      if (!labelsOf(rem, names).label && rem._id !== centerId) return;
       if (b.nodes.size >= opts.maxNodes) {
         truncated = true;
         return;
       }
-      b.addNode(rem._id, label || 'Untitled', rem._id === centerId);
+      b.addNode(rem._id, rem, names, rem._id === centerId);
 
       const neighbors: [string, LinkKind][] = [];
       if (opts.showTree) {
@@ -151,12 +241,15 @@ export async function loadLocalGraph(
       if (opts.showRefs) {
         for (const id of [...referencedIds(rem.text), ...referencedIds(rem.backText)])
           neighbors.push([id, 'ref']);
-        for (const id of backlinks[i]) neighbors.push([id, 'ref']);
+        for (const id of extra[i].back) neighbors.push([id, 'ref']);
+      }
+      if (opts.showTags) {
+        for (const id of [...extra[i].tags, ...extra[i].tagged]) neighbors.push([id, 'tag']);
       }
 
       for (const [id, kind] of neighbors) {
         b.addLink(rem._id, id, kind);
-        if (level < depth && !seen.has(id)) {
+        if (!last && !seen.has(id)) {
           seen.add(id);
           next.push(id);
         }
@@ -166,22 +259,52 @@ export async function loadLocalGraph(
     frontier = next;
   }
 
-  return b.finish(truncated);
+  const data = b.finish(truncated);
+  colorByBranch(data, centerId);
+  return data;
+}
+
+/** Give each branch coming off the center its own color number. */
+function colorByBranch(data: GraphData, centerId: string) {
+  const near = new Map<string, string[]>();
+  for (const l of data.links) {
+    const a = l.source as string;
+    const c = l.target as string;
+    if (!near.has(a)) near.set(a, []);
+    if (!near.has(c)) near.set(c, []);
+    near.get(a)!.push(c);
+    near.get(c)!.push(a);
+  }
+  const group = new Map<string, number>([[centerId, 0]]);
+  let nextGroup = 1;
+  let queue = [centerId];
+  while (queue.length) {
+    const after: string[] = [];
+    for (const id of queue) {
+      for (const n of near.get(id) || []) {
+        if (group.has(n)) continue;
+        group.set(n, id === centerId ? nextGroup++ : group.get(id)!);
+        after.push(n);
+      }
+    }
+    queue = after;
+  }
+  for (const n of data.nodes) n.group = group.get(n.id) ?? 0;
 }
 
 /**
- * "Everything" graph: the whole knowledge base. To keep it fast,
+ * "Everything" map: the whole knowledge base. To keep it fast,
  * only the best-connected Rems (up to maxNodes) are drawn.
  */
 export async function loadGlobalGraph(plugin: RNPlugin, opts: GraphOptions): Promise<GraphData> {
   const all = ((await plugin.rem.getAll()) || []) as unknown as RemLike[];
   const byId = new Map<string, RemLike>();
-  const labels = new Map<string, string>();
+  const names = new Map<string, string>();
   for (const r of all) {
-    const label = labelOf(r);
+    const label = labelsOf(r).label;
     if (!label) continue;
     byId.set(r._id, r);
-    labels.set(r._id, label);
+    names.set(r._id, label);
   }
 
   const raw: [string, string, LinkKind][] = [];
@@ -194,7 +317,7 @@ export async function loadGlobalGraph(plugin: RNPlugin, opts: GraphOptions): Pro
     }
   }
 
-  // rank Rems by how many lines touch them; references count extra
+  // rank Rems by how many lines touch them; [[links]] count extra
   const score = new Map<string, number>();
   for (const [a, b2, kind] of raw) {
     const w = kind === 'ref' ? 3 : 1;
@@ -202,10 +325,38 @@ export async function loadGlobalGraph(plugin: RNPlugin, opts: GraphOptions): Pro
     score.set(b2, (score.get(b2) || 0) + w);
   }
   const ranked = [...score.entries()].sort((x, y) => y[1] - x[1]);
-  const keep = new Set(ranked.slice(0, opts.maxNodes).map(([id]) => id));
+  const keep = ranked.slice(0, opts.maxNodes).map(([id]) => id);
+  const keepSet = new Set(keep);
 
   const builder = new Builder();
-  for (const id of keep) builder.addNode(id, labels.get(id) || 'Untitled');
+  for (const id of keep) builder.addNode(id, byId.get(id)!, names);
   for (const [a, b2, kind] of raw) builder.addLink(a, b2, kind);
-  return builder.finish(ranked.length > opts.maxNodes);
+
+  // tags: only asked for the bubbles we draw, a few at a time, to stay fast
+  if (opts.showTags) {
+    for (let i = 0; i < keep.length; i += 40) {
+      await Promise.all(
+        keep.slice(i, i + 40).map(async (id) => {
+          const r = byId.get(id)!;
+          for (const t of await safe(r.getTagRems, r)) {
+            if (keepSet.has(t._id)) builder.addLink(id, t._id, 'tag');
+          }
+        })
+      );
+    }
+  }
+
+  const data = builder.finish(ranked.length > opts.maxNodes);
+
+  // color by the top-level document or folder each Rem lives in
+  const groupOfRoot = new Map<string, number>();
+  for (const n of data.nodes) {
+    let cur = byId.get(n.id);
+    let hops = 0;
+    while (cur?.parent && byId.has(cur.parent) && hops++ < 50) cur = byId.get(cur.parent);
+    const root = cur?._id ?? n.id;
+    if (!groupOfRoot.has(root)) groupOfRoot.set(root, groupOfRoot.size + 1);
+    n.group = groupOfRoot.get(root)!;
+  }
+  return data;
 }

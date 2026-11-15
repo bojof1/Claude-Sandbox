@@ -1,43 +1,54 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePlugin, useTrackerPlugin } from '@remnote/plugin-sdk';
 import {
-  forceCenter,
   forceCollide,
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type Simulation,
 } from 'd3-force';
 import { select } from 'd3-selection';
-import { zoom, zoomIdentity, type ZoomBehavior } from 'd3-zoom';
+import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom';
 import { drag } from 'd3-drag';
-import { loadGlobalGraph, loadLocalGraph, type GLink, type GNode, type GraphData } from './graphData';
+import {
+  loadGlobalGraph,
+  loadLocalGraph,
+  type GLink,
+  type GNode,
+  type GraphData,
+  type LinkKind,
+} from './graphData';
 
 type Mode = 'local' | 'global';
 
-const COLORS = {
-  node: '#8b93a1',
-  center: '#7c5cff',
-  match: '#f59e0b',
-  child: 'rgba(139,147,161,0.45)',
-  ref: 'rgba(124,92,255,0.55)',
-  label: '#8b93a1',
-};
+/** One color per branch. Index 0 is the center bubble. */
+const BRANCH = ['#F2B705', '#4C9AFF', '#F2784B', '#36B37E', '#E5559B', '#00B8D9', '#8777D9', '#C9A227', '#FF8F73'];
+const INK = '#8A93A3';
+const MATCH = '#FF3B6B';
+const LABEL_PX = 11;
+const LABEL_MAX = 26;
 
-function radius(n: GNode) {
-  if (n.isCenter) return 11;
-  return Math.min(4 + Math.sqrt(n.degree) * 2, 16);
+function colorOf(n: GNode) {
+  if (n.isCenter) return BRANCH[0];
+  return BRANCH[1 + ((Math.max(n.group, 1) - 1) % (BRANCH.length - 1))];
 }
 
-function short(s: string, max = 28) {
+function radius(n: GNode) {
+  if (n.isCenter) return 13;
+  return Math.min(5 + Math.sqrt(n.degree) * 1.8, 15);
+}
+
+function short(s: string, max = LABEL_MAX) {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
 interface Props {
-  /** The Rem the "This page" graph is built around. */
+  /** The Rem the "This page" map is built around. */
   centerId: string | undefined;
   height: number | string;
-  /** Called after a dot is clicked and its Rem is opened (e.g. to close the popup). */
+  /** Called after a bubble is clicked and its Rem is opened (e.g. to close the popup). */
   onOpened?: () => void;
 }
 
@@ -46,35 +57,66 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown>>();
   const simRef = useRef<Simulation<GNode, GLink>>();
+  const fitRef = useRef<() => void>(() => {});
+  const relabelRef = useRef<() => void>(() => {});
   const onOpenedRef = useRef(onOpened);
   onOpenedRef.current = onOpened;
 
   const [mode, setMode] = useState<Mode>('local');
   const [depth, setDepth] = useState(2);
   const [search, setSearch] = useState('');
+  const [hideAnswers, setHideAnswers] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
+  const [peek, setPeek] = useState('');
+  const [kinds, setKinds] = useState<Record<LinkKind, boolean>>({ child: true, ref: true, tag: true });
+  const [cardsOnly, setCardsOnly] = useState(false);
+  /** A bubble picked with "Map from here". It replaces the open page as the center. */
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<{ id: string; label: string; hiddenLabel: string } | null>(null);
+  const center = focusId ?? centerId;
+
+  // moving to another page in RemNote goes back to following the open page
+  useEffect(() => {
+    setFocusId(null);
+  }, [centerId]);
+
+  const openRem = async (id: string) => {
+    const rem = await plugin.rem.findOne(id);
+    if (rem) {
+      await plugin.window.openRem(rem);
+      onOpenedRef.current?.();
+    }
+  };
+  const openRemRef = useRef(openRem);
+  openRemRef.current = openRem;
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // live values the drawing code reads without redrawing everything
+  const live = useRef({ hideAnswers, search });
+  live.current = { hideAnswers, search };
+
   const showTree = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tree')) ?? true;
   const showRefs = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-refs')) ?? true;
+  const showTags = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tags')) ?? true;
   const maxNodes = useTrackerPlugin((rp) => rp.settings.getSetting<number>('max-nodes')) ?? 400;
 
-  // 1) Load the dots and lines
+  // 1) Load the bubbles and lines
   useEffect(() => {
     let cancelled = false;
     async function run() {
-      if (mode === 'local' && !centerId) {
+      if (mode === 'local' && !center) {
         setData(null);
         return;
       }
       setLoading(true);
       setError(null);
       try {
-        const opts = { showTree, showRefs, maxNodes: Math.max(10, maxNodes) };
+        const opts = { showTree, showRefs, showTags, maxNodes: Math.max(10, maxNodes) };
         const d =
           mode === 'local'
-            ? await loadLocalGraph(plugin, centerId!, depth, opts)
+            ? await loadLocalGraph(plugin, center!, depth, opts)
             : await loadGlobalGraph(plugin, opts);
         if (!cancelled) setData(d);
       } catch (e: any) {
@@ -87,27 +129,64 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [plugin, mode, depth, centerId, showTree, showRefs, maxNodes]);
+  }, [plugin, mode, depth, center, showTree, showRefs, showTags, maxNodes]);
 
-  // 2) Draw them with a force layout (dots push apart, lines pull together)
+  // 1b) Apply the on-screen switches (line types, cards only) without reloading
+  const view = useMemo<GraphData | null>(() => {
+    if (!data) return null;
+    let links = data.links.filter((l) => kinds[l.kind]);
+    let keep = new Set(data.nodes.map((n) => n.id));
+    if (cardsOnly) {
+      const byId = new Map(data.nodes.map((n) => [n.id, n]));
+      keep = new Set(data.nodes.filter((n) => n.isCard || n.isCenter).map((n) => n.id));
+      // also keep the ideas that cards point at with a [[link]] or a tag
+      for (const l of links) {
+        if (l.kind === 'child') continue;
+        const a = l.source as string;
+        const b = l.target as string;
+        if (byId.get(a)?.isCard) keep.add(b);
+        if (byId.get(b)?.isCard) keep.add(a);
+      }
+      links = links.filter((l) => keep.has(l.source as string) && keep.has(l.target as string));
+    }
+    const degree = new Map<string, number>();
+    for (const l of links) {
+      degree.set(l.source as string, (degree.get(l.source as string) || 0) + 1);
+      degree.set(l.target as string, (degree.get(l.target as string) || 0) + 1);
+    }
+    const nodes = data.nodes
+      .filter((n) => keep.has(n.id) && (n.isCenter || degree.has(n.id) || (cardsOnly && n.isCard)))
+      .map((n) => ({ ...n, degree: degree.get(n.id) || 0 }));
+    return { nodes, links, truncated: data.truncated };
+  }, [data, kinds, cardsOnly]);
+
+  // 2) Draw them (bubbles push apart, lines pull together)
   useEffect(() => {
     const svgEl = svgRef.current;
-    if (!svgEl || !data) return;
+    if (!svgEl || !view) return;
+    const data = view;
+    setSelected(null);
     const svg = select(svgEl);
     svg.selectAll('*').remove();
 
-    const { width, height: h } = svgEl.getBoundingClientRect();
+    const box = svgEl.getBoundingClientRect();
+    const width = box.width || 600;
+    const h = box.height || 400;
     const nodes: GNode[] = data.nodes.map((n) => ({ ...n }));
     const links: GLink[] = data.links.map((l) => ({ ...l }));
+    const big = nodes.length > 150;
 
     const root = svg.append('g');
     const linkSel = root
       .append('g')
-      .selectAll('line')
+      .attr('fill', 'none')
+      .selectAll('path')
       .data(links)
-      .join('line')
-      .attr('stroke', (l) => (l.kind === 'ref' ? COLORS.ref : COLORS.child))
-      .attr('stroke-width', (l) => (l.kind === 'ref' ? 1.4 : 1));
+      .join('path')
+      .attr('stroke-linecap', 'round')
+      .attr('stroke-width', (l) => (l.kind === 'child' ? 1.6 : 1.3))
+      .attr('stroke-dasharray', (l) => (l.kind === 'ref' ? '6 4' : l.kind === 'tag' ? '2 5' : null))
+      .attr('stroke-opacity', (l) => (l.kind === 'child' ? 0.4 : 0.75));
 
     const nodeSel = root
       .append('g')
@@ -120,21 +199,18 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     nodeSel
       .append('circle')
       .attr('r', radius)
-      .attr('fill', (n) => (n.isCenter ? COLORS.center : COLORS.node))
-      .attr('stroke', 'rgba(255,255,255,0.6)')
-      .attr('stroke-width', 1);
+      .attr('fill', colorOf)
+      .attr('fill-opacity', (n) => (n.isCenter ? 1 : 0.9))
+      .attr('stroke', (n) => (n.isCenter ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.35)'))
+      .attr('stroke-width', (n) => (n.isCenter ? 2.5 : 1));
 
-    nodeSel
+    const textSel = nodeSel
       .append('text')
-      .text((n) => short(n.label))
-      .attr('x', 0)
-      .attr('y', (n) => radius(n) + 11)
       .attr('text-anchor', 'middle')
-      .attr('font-size', 10)
-      .attr('fill', COLORS.label)
-      .attr('pointer-events', 'none');
-
-    nodeSel.append('title').text((n) => n.label);
+      .attr('fill', INK)
+      .attr('font-weight', (n) => (n.isCenter ? 700 : 400))
+      .attr('pointer-events', 'none')
+      .style('display', 'none');
 
     // which Rems touch each other (for hover highlighting)
     const neighbors = new Map<string, Set<string>>();
@@ -147,60 +223,136 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       neighbors.get(b)!.add(a);
     }
 
-    let k = 1;
-    const labelVisible = (n: GNode) => n.isCenter || n.degree >= 4 || k > 1.6 || nodes.length < 40;
-    const updateLabels = () => nodeSel.select('text').attr('opacity', (n) => (labelVisible(n) ? 1 : 0));
-    updateLabels();
-
-    nodeSel
-      .on('mouseenter', (_e, n) => {
-        const near = neighbors.get(n.id) || new Set();
-        nodeSel.attr('opacity', (m) => (m.id === n.id || near.has(m.id) ? 1 : 0.2));
-        nodeSel.select('text').attr('opacity', (m) => (m.id === n.id || near.has(m.id) ? 1 : 0));
-        linkSel.attr('opacity', (l) =>
-          (l.source as GNode).id === n.id || (l.target as GNode).id === n.id ? 1 : 0.08
-        );
-      })
-      .on('mouseleave', () => {
-        nodeSel.attr('opacity', 1);
-        linkSel.attr('opacity', 1);
-        updateLabels();
-      })
-      .on('click', async (e, n) => {
-        if ((e as any).defaultPrevented) return; // was a drag
-        const rem = await plugin.rem.findOne(n.id);
-        if (rem) {
-          await plugin.window.openRem(rem);
-          onOpenedRef.current?.();
-        }
-      });
-
     const sim = forceSimulation<GNode>(nodes)
       .force(
         'link',
         forceLink<GNode, GLink>(links)
           .id((n) => n.id)
-          .distance((l) => (l.kind === 'ref' ? 70 : 45))
-          .strength(0.6)
+          .distance((l) => (l.kind === 'child' ? (big ? 55 : 80) : big ? 90 : 130))
+          .strength((l) => (l.kind === 'child' ? 0.7 : 0.15))
       )
-      .force('charge', forceManyBody().strength(nodes.length > 300 ? -40 : -140))
-      .force('center', forceCenter(width / 2, h / 2))
-      .force('collide', forceCollide<GNode>().radius((n) => radius(n) + 3));
+      .force('charge', forceManyBody().strength(big ? -160 : -420))
+      .force('x', forceX(width / 2).strength(0.04))
+      .force('y', forceY(h / 2).strength(0.04))
+      .force('collide', forceCollide<GNode>().radius((n) => radius(n) + (big ? 8 : 16)))
+      .stop();
     simRef.current = sim;
+    // settle the layout before showing it, so it does not jump around
+    sim.tick(big ? 180 : 260);
 
-    sim.on('tick', () => {
-      linkSel
-        .attr('x1', (l) => (l.source as GNode).x!)
-        .attr('y1', (l) => (l.source as GNode).y!)
-        .attr('x2', (l) => (l.target as GNode).x!)
-        .attr('y2', (l) => (l.target as GNode).y!);
-      nodeSel.attr('transform', (n) => `translate(${n.x},${n.y})`);
+    // line colors follow the bubble farther from the center
+    linkSel.attr('stroke', (l) => {
+      if (l.kind !== 'child') return INK;
+      const s = l.source as GNode;
+      const t = l.target as GNode;
+      return colorOf(s.isCenter ? t : s.group ? s : t);
     });
+
+    let tf: ZoomTransform = zoomIdentity;
+    let hovered: string | null = null;
+
+    const labelText = (n: GNode) => short(live.current.hideAnswers ? n.hiddenLabel : n.label);
+    const isMatch = (n: GNode) => {
+      const q = live.current.search.trim().toLowerCase();
+      return !!q && n.label.toLowerCase().includes(q);
+    };
+
+    /** Show as many names as fit without sitting on top of each other. */
+    const relabel = () => {
+      const k = tf.k;
+      const near = hovered ? neighbors.get(hovered) || new Set<string>() : null;
+      const rank = (n: GNode) =>
+        (n.id === hovered ? 1e6 : 0) +
+        (near?.has(n.id) ? 1e5 : 0) +
+        (isMatch(n) ? 1e4 : 0) +
+        (n.isCenter ? 1e3 : 0) +
+        n.degree;
+      const order = [...nodes].sort((a, b) => rank(b) - rank(a));
+      const placed: [number, number, number, number][] = [];
+      const show = new Set<string>();
+      // bubbles count as taken space too, so names do not sit on other bubbles
+      const bubbles = nodes.map((m) => {
+        const r = radius(m) * k + 2;
+        return [m.id, m.x! * k + tf.x - r, m.y! * k + tf.y - r, r * 2] as const;
+      });
+      for (const n of order) {
+        if (near && n.id !== hovered && !near.has(n.id)) continue;
+        const sx = n.x! * k + tf.x;
+        const sy = n.y! * k + tf.y;
+        if (sx < -40 || sx > width + 40 || sy < -20 || sy > h + 20) continue;
+        const w = labelText(n).length * 6.6 + 12;
+        const x0 = sx - w / 2;
+        const y0 = sy + radius(n) * k + 2;
+        const hit =
+          placed.some(
+            ([px, py, pw, ph]) => x0 < px + pw && x0 + w > px && y0 < py + ph && y0 + 16 > py
+          ) ||
+          bubbles.some(
+            ([id, bx, by, bd]) =>
+              id !== n.id && x0 < bx + bd && x0 + w > bx && y0 < by + bd && y0 + 16 > by
+          );
+        if (hit && n.id !== hovered && !n.isCenter) continue;
+        placed.push([x0, y0, w, 15]);
+        show.add(n.id);
+      }
+      textSel
+        .style('display', (n) => (show.has(n.id) ? null : 'none'))
+        .text(labelText)
+        .attr('font-size', LABEL_PX / k)
+        .attr('y', (n) => radius(n) + (LABEL_PX + 2) / k);
+    };
+    relabelRef.current = relabel;
+
+    const place = () => {
+      linkSel.attr('d', (l) => {
+        const s = l.source as GNode;
+        const t = l.target as GNode;
+        const dx = t.x! - s.x!;
+        const dy = t.y! - s.y!;
+        // a gentle bend, like a hand-drawn branch
+        const mx = (s.x! + t.x!) / 2 - dy * 0.12;
+        const my = (s.y! + t.y!) / 2 + dx * 0.12;
+        return `M${s.x},${s.y}Q${mx},${my} ${t.x},${t.y}`;
+      });
+      nodeSel.attr('transform', (n) => `translate(${n.x},${n.y})`);
+    };
+
+    let ticks = 0;
+    sim.on('tick', () => {
+      place();
+      if (++ticks % 8 === 0) relabel();
+    });
+    sim.on('end', relabel);
+
+    nodeSel
+      .on('mouseenter', (_e, n) => {
+        hovered = n.id;
+        const near = neighbors.get(n.id) || new Set();
+        nodeSel.attr('opacity', (m) => (m.id === n.id || near.has(m.id) ? 1 : 0.15));
+        linkSel.attr('opacity', (l) =>
+          (l.source as GNode).id === n.id || (l.target as GNode).id === n.id ? 1 : 0.06
+        );
+        setPeek(live.current.hideAnswers ? n.hiddenLabel : n.label);
+        relabel();
+      })
+      .on('mouseleave', () => {
+        hovered = null;
+        nodeSel.attr('opacity', 1);
+        linkSel.attr('opacity', 1);
+        setPeek('');
+        relabel();
+      })
+      .on('click', (e, n) => {
+        if ((e as any).defaultPrevented) return; // was a drag
+        if ((e as MouseEvent).metaKey || (e as MouseEvent).ctrlKey) openRemRef.current(n.id);
+        else setSelected({ id: n.id, label: n.label, hiddenLabel: n.hiddenLabel });
+      })
+      .on('dblclick', (_e, n) => openRemRef.current(n.id));
 
     nodeSel.call(
       drag<SVGGElement, GNode>()
         .on('start', (e, n) => {
-          if (!e.active) sim.alphaTarget(0.3).restart();
+          if (!e.active) sim.alphaTarget(0.2).restart();
           n.fx = n.x;
           n.fy = n.y;
         })
@@ -208,60 +360,98 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           n.fx = e.x;
           n.fy = e.y;
         })
-        .on('end', (e, n) => {
+        .on('end', (e) => {
           if (!e.active) sim.alphaTarget(0);
-          n.fx = null;
-          n.fy = null;
+          // the bubble stays where you drop it
         })
     );
 
     const z = zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 6])
+      .scaleExtent([0.05, 8])
       .on('zoom', (e) => {
-        k = e.transform.k;
-        root.attr('transform', e.transform.toString());
-        updateLabels();
+        tf = e.transform;
+        root.attr('transform', tf.toString());
+        relabel();
       });
     zoomRef.current = z;
     svg.call(z).on('dblclick.zoom', null);
-    svg.call(z.transform, zoomIdentity);
+
+    /** Zoom so the whole map fits in the window. */
+    const fit = () => {
+      if (!nodes.length) return;
+      const xs = nodes.map((n) => n.x!);
+      const ys = nodes.map((n) => n.y!);
+      const x0 = Math.min(...xs) - 40;
+      const x1 = Math.max(...xs) + 40;
+      const y0 = Math.min(...ys) - 30;
+      const y1 = Math.max(...ys) + 40;
+      const k = Math.min(width / (x1 - x0), h / (y1 - y0), 1.6);
+      const t = zoomIdentity
+        .translate(width / 2 - (k * (x0 + x1)) / 2, h / 2 - (k * (y0 + y1)) / 2)
+        .scale(k);
+      svg.call(z.transform, t);
+    };
+    fitRef.current = fit;
+
+    place();
+    fit();
 
     return () => {
       sim.stop();
     };
-  }, [data, plugin]);
+  }, [view, plugin]);
 
-  // 3) Search: light up dots whose text matches
+  // 3) Find: light up bubbles whose text matches. Also refresh names when answers are hidden or shown.
   useEffect(() => {
     const svgEl = svgRef.current;
     if (!svgEl) return;
     const q = search.trim().toLowerCase();
+    const hit = (n: GNode) => !!q && n.label.toLowerCase().includes(q);
     select(svgEl)
       .selectAll<SVGCircleElement, GNode>('g.gv-node circle')
-      .attr('fill', (n) =>
-        q && n.label.toLowerCase().includes(q) ? COLORS.match : n.isCenter ? COLORS.center : COLORS.node
-      )
-      .attr('r', (n) => (q && n.label.toLowerCase().includes(q) ? radius(n) + 3 : radius(n)));
-  }, [search, data]);
-
-  const fit = () => {
-    const svgEl = svgRef.current;
-    if (svgEl && zoomRef.current) select(svgEl).call(zoomRef.current.transform, zoomIdentity);
-    simRef.current?.alpha(0.6).restart();
-  };
+      .attr('fill', (n) => (hit(n) ? MATCH : colorOf(n)))
+      .attr('r', (n) => (hit(n) ? radius(n) + 4 : radius(n)));
+    relabelRef.current();
+  }, [search, hideAnswers, view]);
 
   const btn = (active: boolean): React.CSSProperties => ({
-    padding: '2px 8px',
-    borderRadius: 6,
-    border: '1px solid rgba(139,147,161,0.5)',
-    background: active ? COLORS.center : 'transparent',
+    padding: '3px 9px',
+    borderRadius: 999,
+    border: '1px solid rgba(138,147,163,0.5)',
+    background: active ? '#4C9AFF' : 'transparent',
     color: active ? 'white' : 'inherit',
     fontSize: 12,
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   });
 
+  const anyCloze = !!data?.nodes.some((n) => n.hasCloze);
+  const anyCard = !!data?.nodes.some((n) => n.isCard);
+  const status = loading
+    ? 'Building your map…'
+    : error
+    ? `Something went wrong: ${error}`
+    : mode === 'local' && !center
+    ? 'Open a page (or click into a Rem) to see its map.'
+    : view && view.nodes.length <= 1
+    ? 'Nothing is connected here yet. Add bullets under this page, or [[links]] and tags, and they will show up.'
+    : view
+    ? `${view.nodes.length} bubbles, ${view.links.length} lines${
+        view.truncated ? '. Showing the most connected ones (raise "Most bubbles" in settings to see more)' : ''
+      }`
+    : '';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height, fontSize: 12 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height,
+        minHeight: 420,
+        fontSize: 12,
+        position: 'relative',
+      }}
+    >
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: 6 }}>
         <button style={btn(mode === 'local')} onClick={() => setMode('local')}>
           This page
@@ -270,8 +460,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           Everything
         </button>
         {mode === 'local' && (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            Steps
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="How far out from this page to look">
+            Reach
             <button style={btn(false)} onClick={() => setDepth((d) => Math.max(1, d - 1))}>
               −
             </button>
@@ -288,31 +478,145 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           style={{
             flex: '1 1 80px',
             minWidth: 60,
-            padding: '2px 6px',
-            borderRadius: 6,
-            border: '1px solid rgba(139,147,161,0.5)',
+            padding: '3px 8px',
+            borderRadius: 999,
+            border: '1px solid rgba(138,147,163,0.5)',
             background: 'transparent',
             color: 'inherit',
           }}
         />
-        <button style={btn(false)} onClick={fit}>
-          Re-center
+        {anyCloze && (
+          <button
+            style={btn(hideAnswers)}
+            onClick={() => setHideAnswers((v) => !v)}
+            title="Hide or show the answers of cloze cards"
+          >
+            {hideAnswers ? 'Answers hidden' : 'Answers shown'}
+          </button>
+        )}
+        {anyCard && (
+          <button
+            style={btn(cardsOnly)}
+            onClick={() => setCardsOnly((v) => !v)}
+            title="Show only flashcards and the ideas they link to"
+          >
+            Cards only
+          </button>
+        )}
+        {focusId && (
+          <button style={btn(false)} onClick={() => setFocusId(null)} title="Go back to the page that is open">
+            Back to open page
+          </button>
+        )}
+        <button style={btn(false)} onClick={() => fitRef.current()} title="Zoom to fit the whole map">
+          Fit
+        </button>
+        <button style={btn(showHelp)} onClick={() => setShowHelp((v) => !v)} title="How this works">
+          ?
         </button>
       </div>
-      <div style={{ padding: '0 8px', opacity: 0.7 }}>
-        {loading
-          ? 'Building graph…'
-          : error
-          ? `Something went wrong: ${error}`
-          : mode === 'local' && !centerId
-          ? 'Open a document (or click into a Rem) to see its graph.'
-          : data
-          ? `${data.nodes.length} dots, ${data.links.length} lines${
-              data.truncated ? ' (showing the most connected ones; raise "Max dots" in settings)' : ''
-            }. Purple lines = references, gray = parent-child.`
-          : ''}
-      </div>
+      {selected && !peek ? (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '0 8px', minHeight: 24 }}>
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {hideAnswers ? selected.hiddenLabel : selected.label}
+          </span>
+          <button style={btn(true)} onClick={() => openRem(selected.id)}>
+            Open
+          </button>
+          <button
+            style={btn(false)}
+            onClick={() => {
+              setFocusId(selected.id);
+              setMode('local');
+            }}
+            title="Redraw the map around this bubble"
+          >
+            Map from here
+          </button>
+        </div>
+      ) : (
+        <div style={{ padding: '0 8px', opacity: 0.7, minHeight: 24 }}>{peek || status}</div>
+      )}
       <svg ref={svgRef} style={{ flex: 1, width: '100%', minHeight: 200 }} />
+      <div style={{ display: 'flex', gap: 14, padding: '4px 8px', opacity: 0.75, flexWrap: 'wrap' }}>
+        <span style={{ opacity: 0.8 }}>Lines (click to hide):</span>
+        {(
+          [
+            ['child', null, 'outline'],
+            ['ref', '6 4', '[[link]]'],
+            ['tag', '2 5', 'tag'],
+          ] as [LinkKind, string | null, string][]
+        ).map(([kind, dash, text]) => (
+          <button
+            key={kind}
+            onClick={() => setKinds((k) => ({ ...k, [kind]: !k[kind] }))}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'inherit',
+              padding: 0,
+              cursor: 'pointer',
+              fontSize: 12,
+              opacity: kinds[kind] ? 1 : 0.35,
+              textDecoration: kinds[kind] ? 'none' : 'line-through',
+            }}
+          >
+            <Key dash={dash} text={text} />
+          </button>
+        ))}
+        <span>Colors = branches</span>
+      </div>
+      {showHelp && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 44,
+            right: 8,
+            width: 290,
+            maxWidth: '90%',
+            padding: 12,
+            borderRadius: 10,
+            background: '#1f2430',
+            color: '#e8ebf0',
+            boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+            lineHeight: 1.5,
+          }}
+        >
+          <b>How this works</b>
+          <ul style={{ margin: '6px 0 0', paddingLeft: 16 }}>
+            <li>Each bubble is one Rem (one bullet). The gold bubble is the page you are on.</li>
+            <li>Solid lines follow your outline. Each branch has its own color.</li>
+            <li>Dashed lines are [[links]]. Dotted lines are tags.</li>
+            <li>Click a bubble, then pick Open or "Map from here". Double-click opens it right away.</li>
+            <li>Drag a bubble to move it. Scroll to zoom. "Fit" shows the whole map.</li>
+            <li>"Cards only" keeps your flashcards and the ideas they link to.</li>
+            <li>Point at a bubble to read it in full and see what it touches.</li>
+            <li>Names hide when they would overlap. Zoom in to see more.</li>
+            <li>"Answers hidden" blanks out cloze answers so you can quiz yourself.</li>
+            <li>"Reach" sets how far from this page the map goes.</li>
+          </ul>
+        </div>
+      )}
     </div>
+  );
+}
+
+function Key({ dash, text }: { dash: string | null; text: string }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <svg width="26" height="6">
+        <line
+          x1="1"
+          y1="3"
+          x2="25"
+          y2="3"
+          stroke={INK}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={dash ?? undefined}
+        />
+      </svg>
+      {text}
+    </span>
   );
 }

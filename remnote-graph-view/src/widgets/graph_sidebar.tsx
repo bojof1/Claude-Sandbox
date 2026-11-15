@@ -8,7 +8,7 @@ export const GraphSidebar = () => {
     return rp.window.getOpenPaneRemId(pane);
   });
 
-  return <GraphView centerId={centerId} height={520} />;
+  return <GraphView centerId={centerId} height="100vh" />;
 };
 
 renderWidget(GraphSidebar);

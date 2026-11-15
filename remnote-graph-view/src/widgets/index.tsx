@@ -18,29 +18,34 @@ async function onActivate(plugin: ReactRNPlugin) {
   });
   await plugin.settings.registerBooleanSetting({
     id: 'show-refs',
-    title: 'Draw lines for references ([[links]])',
+    title: 'Draw lines for [[links]]',
+    defaultValue: true,
+  });
+  await plugin.settings.registerBooleanSetting({
+    id: 'show-tags',
+    title: 'Draw lines for tags',
     defaultValue: true,
   });
   await plugin.settings.registerNumberSetting({
     id: 'max-nodes',
-    title: 'Max dots to draw (lower = faster)',
+    title: 'Most bubbles to draw (lower = faster)',
     defaultValue: 400,
   });
 
-  // Big graph in a pop-up window
+  // Big map in a pop-up window
   await plugin.app.registerWidget('graph_popup', WidgetLocation.Popup, {
     dimensions: { height: 640, width: 960 },
   });
-  // Small graph in the right sidebar that follows the open page
+  // Smaller map in the right sidebar that follows the open page
   await plugin.app.registerWidget('graph_sidebar', WidgetLocation.RightSidebar, {
-    dimensions: { height: 'auto', width: '100%' },
-    widgetTabTitle: 'Graph',
+    dimensions: { height: '100%', width: '100%' },
+    widgetTabTitle: 'Bubble Map',
     widgetTabIcon: `${plugin.rootURL}logo.svg`,
   });
 
   await plugin.app.registerCommand({
     id: 'open-graph-view',
-    name: 'Open Graph View',
+    name: 'Open Bubble Map',
     keyboardShortcut: 'mod+shift+g',
     action: async () => {
       const remId = await currentRemId(plugin);

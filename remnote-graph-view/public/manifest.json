@@ -1,17 +1,17 @@
 {
   "manifestVersion": 1,
   "id": "bolurin_graph_view",
-  "name": "Graph View",
+  "name": "Bubble Map",
   "author": "Bolurin",
   "repoUrl": "https://github.com/bojof1/Claude-Sandbox",
   "version": {
     "major": 0,
-    "minor": 1,
+    "minor": 2,
     "patch": 0
   },
   "theme": [],
   "enableOnMobile": false,
-  "description": "An Obsidian-style graph view: every Rem is a dot, links and parent-child are lines, click a dot to open it.",
+  "description": "See your notes as a map of bubbles and branches. Each Rem is a bubble, lines show your outline, links and tags, and a click opens the Rem.",
   "requestNative": false,
   "requiredScopes": [
     {

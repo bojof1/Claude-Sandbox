@@ -1,17 +1,24 @@
-# Graph View for RemNote
+# Bubble Map for RemNote
 
-An Obsidian-style graph for RemNote. Every Rem is a dot. Lines show which Rems are linked.
+See your notes as a map of bubbles and branches, like a hand-drawn mind map.
 
-- **Gray lines** are parent and child (the outline).
-- **Purple lines** are references (`[[links]]`).
-- **Click a dot** to open that Rem. Drag dots to move them. Scroll to zoom.
-- **This page** shows the Rems around the page you have open. **Everything** shows your whole knowledge base (the most connected Rems first).
-- **Find** lights up dots that match what you type.
+- Each **bubble** is one Rem (one bullet). The **gold bubble** is the page you are on.
+- **Solid lines** follow your outline (parent and child). Each branch gets its own color.
+- **Dashed lines** are `[[links]]`. **Dotted lines** are tags.
+- **Click** a bubble, then pick **Open** or **Map from here** (redraws the map around it). **Double-click** opens it right away.
+- **Drag** to move a bubble. **Scroll** to zoom. **Fit** shows the whole map.
+- **Cards only** keeps your flashcards and the ideas they link to.
+- Click a line type at the bottom to hide or show it.
+- **Point** at a bubble to read it in full and see what it touches.
+- Names hide when they would overlap, so the map stays readable. Zoom in to see more.
+- **Answers hidden** blanks out cloze answers so you can quiz yourself from the map.
+- **This page** maps the Rems around the open page. **Reach** sets how far out it goes. **Everything** maps your whole knowledge base (most connected Rems first).
+- **Find** lights up bubbles that match what you type.
 
 ## How to open it in RemNote
 
-- Press **Cmd + Shift + G**, or type `/Open Graph View`, to open the big graph.
-- Or open the right sidebar and pick the **Graph** tab. It follows the page you are on.
+- Open the right sidebar and click the bubble icon. The map follows the page you are on.
+- Or press **Cmd + Shift + G**, or type `/Open Bubble Map`, for a big pop-up map.
 
 ## Load it on your Mac (local dev plugin)
 
@@ -28,4 +35,8 @@ The plugin stays loaded while `npm run dev` is running. Next time, just do steps
 
 ## Settings
 
-In RemNote, **Settings > Plugins > Graph View**: turn parent-child lines or reference lines on or off, and set the most dots to draw (lower is faster).
+In RemNote, **Settings > Plugin Settings > Bubble Map**: turn outline lines, link lines or tag lines on or off, and set the most bubbles to draw (lower is faster).
+
+## Credits
+
+Original code, MIT license. Drawing uses the open-source d3 libraries (ISC license).
