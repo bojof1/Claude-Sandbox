@@ -35,6 +35,7 @@ async function onActivate(plugin: ReactRNPlugin) {
   await plugin.app.registerWidget('graph_sidebar', WidgetLocation.RightSidebar, {
     dimensions: { height: 'auto', width: '100%' },
     widgetTabTitle: 'Graph',
+    widgetTabIcon: `${plugin.rootURL}logo.svg`,
   });
 
   await plugin.app.registerCommand({
