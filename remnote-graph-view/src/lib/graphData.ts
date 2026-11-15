@@ -12,6 +12,14 @@ export interface GNode {
   hasCloze: boolean;
   /** True when the Rem is a flashcard (a cloze, or a front and a back). */
   isCard: boolean;
+  /** The answer side of a front-and-back card ('' when there is none). */
+  back: string;
+  /** The bubble this one sits under in the outline. */
+  parentId: string | null;
+  /** Rems this one points at with a [[link]] in its own text. */
+  refs: string[];
+  /** Set while the branch under this bubble is folded away: how many bubbles are hidden. */
+  folded?: number;
   degree: number;
   isCenter: boolean;
   /** Which branch (color) the bubble belongs to. */
@@ -123,8 +131,9 @@ function labelsOf(rem: RemLike, names?: Map<string, string>) {
   const rt = richTextToLabel(rem.text, names) ? rem.text : rem.backText;
   // RemNote keeps hidden helper Rems (saved searches) that start with "query:"; leave them out
   if (richTextToLabel(rt, names).startsWith('query:'))
-    return { label: '', hiddenLabel: '', hasCloze: false, isCard: false };
+    return { label: '', hiddenLabel: '', back: '', hasCloze: false, isCard: false };
   return {
+    back: rt === rem.text ? richTextToLabel(rem.backText, names) : '',
     label: richTextToLabel(rt, names),
     hiddenLabel: richTextToLabel(rt, names, true),
     hasCloze: hasCloze(rt),
@@ -155,6 +164,9 @@ class Builder {
       hiddenLabel: l.hiddenLabel || 'Untitled',
       hasCloze: l.hasCloze,
       isCard: l.isCard,
+      back: l.back,
+      parentId: rem.parent,
+      refs: [...new Set([...referencedIds(rem.text), ...referencedIds(rem.backText)])],
       degree: 0,
       isCenter,
       group: 0,
@@ -198,6 +210,8 @@ class Builder {
       this.addLink(a2, b2, kind);
     }
     for (const id of [...this.nodes.keys()]) if (to(id) !== id) this.nodes.delete(id);
+    // bullets that sat under a folded bullet now sit under the idea itself
+    for (const n of this.nodes.values()) if (n.parentId) n.parentId = to(n.parentId);
   }
 
   finish(truncated: boolean): GraphData {
@@ -355,6 +369,75 @@ export async function addReference(plugin: RNPlugin, fromId: string, toId: strin
   if ([...referencedIds(from.text), ...referencedIds(from.backText)].includes(toId)) return 'exists';
   await from.setText([...text, ' ', { i: 'q', _id: toId }]);
   return 'added';
+}
+
+/** Remove every [[link]] to one Rem from another Rem's text. The rest of the text stays. */
+export async function removeReference(plugin: RNPlugin, fromId: string, toId: string) {
+  const from = (await plugin.rem.findOne(fromId)) as any;
+  if (!from) return false;
+  const strip = (rt: any[] | undefined) => {
+    if (!rt) return rt;
+    const out = rt.filter((el) => !(el && typeof el === 'object' && el.i === 'q' && el._id === toId));
+    // drop the space that was left hanging at the end
+    while (out.length > 1 && typeof out[out.length - 1] === 'string' && !out[out.length - 1].trim())
+      out.pop();
+    return out;
+  };
+  const text = strip(from.text);
+  const back = strip(from.backText);
+  let changed = false;
+  if (text && text.length !== (from.text || []).length) {
+    await from.setText(text);
+    changed = true;
+  }
+  if (back && back.length !== (from.backText || []).length) {
+    await from.setBackText(back);
+    changed = true;
+  }
+  return changed;
+}
+
+/** Make a new Rem with this text under a parent Rem. Returns its id. */
+export async function addChild(plugin: RNPlugin, parentId: string, text: string) {
+  const rem = (await plugin.rem.createRem()) as any;
+  if (!rem) throw new Error('RemNote did not create the Rem');
+  await rem.setText([text]);
+  await rem.setParent(parentId);
+  return rem._id as string;
+}
+
+export type Study = 'new' | 'due' | 'weak' | 'strong';
+
+/** How each flashcard bubble is doing: new, due now, weak (missed last time) or strong. */
+export async function loadStudy(plugin: RNPlugin, ids: string[]): Promise<Map<string, Study>> {
+  const out = new Map<string, Study>();
+  const now = Date.now();
+  for (let i = 0; i < ids.length; i += 40) {
+    const rems = (((await plugin.rem.findMany(ids.slice(i, i + 40))) || []) as any[]).filter(Boolean);
+    await Promise.all(
+      rems.map(async (r) => {
+        let cards: any[] = [];
+        try {
+          cards = (await r.getCards()) || [];
+        } catch {
+          return;
+        }
+        if (!cards.length) return;
+        let worst: Study = 'strong';
+        const rank = { strong: 0, new: 1, weak: 2, due: 3 };
+        for (const c of cards) {
+          const hist: any[] = (c.repetitionHistory || []).filter((h: any) => h.score <= 1.5);
+          let s: Study = 'strong';
+          if (!hist.length) s = 'new';
+          else if (c.nextRepetitionTime && c.nextRepetitionTime <= now) s = 'due';
+          else if (hist[hist.length - 1].score === 0) s = 'weak';
+          if (rank[s] > rank[worst]) worst = s;
+        }
+        out.set(r._id, worst);
+      })
+    );
+  }
+  return out;
 }
 
 /** Give each branch coming off the center its own color number. */

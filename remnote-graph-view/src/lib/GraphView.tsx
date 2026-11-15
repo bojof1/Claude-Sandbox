@@ -13,9 +13,13 @@ import { select } from 'd3-selection';
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom';
 import { drag } from 'd3-drag';
 import {
+  addChild,
   addReference,
   loadGlobalGraph,
   loadLocalGraph,
+  loadStudy,
+  removeReference,
+  type Study,
   type GLink,
   type GNode,
   type GraphData,
@@ -31,6 +35,14 @@ const MATCH = '#FF3B6B';
 const LABEL_PX = 11;
 const LABEL_MAX = 26;
 
+const STUDY: Record<Study, [string, string]> = {
+  due: ['#FF5A5F', 'due now'],
+  weak: ['#F2994A', 'missed last time'],
+  new: ['#4C9AFF', 'new'],
+  strong: ['#36B37E', 'going well'],
+};
+const NOT_A_CARD = '#59616E';
+
 function colorOf(n: GNode) {
   if (n.isCenter) return BRANCH[0];
   return BRANCH[1 + ((Math.max(n.group, 1) - 1) % (BRANCH.length - 1))];
@@ -38,7 +50,8 @@ function colorOf(n: GNode) {
 
 function radius(n: GNode) {
   if (n.isCenter) return 13;
-  return Math.min(5 + Math.sqrt(n.degree) * 1.8, 15);
+  const r = Math.min(5 + Math.sqrt(n.degree) * 1.8, 15);
+  return n.folded ? Math.max(r, 10) : r;
 }
 
 function short(s: string, max = LABEL_MAX) {
@@ -78,14 +91,29 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [cardsOnly, setCardsOnly] = useState(false);
   const [linkMode, setLinkMode] = useState(false);
   const [linkFrom, setLinkFrom] = useState<{ id: string; label: string } | null>(null);
+  /** The bubble whose little info card is open. */
+  const [sel, setSel] = useState<string | null>(null);
+  const [reveal, setReveal] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+  const [addText, setAddText] = useState('');
+  const [studyOn, setStudyOn] = useState(false);
+  const [study, setStudy] = useState<Map<string, Study>>(new Map());
   const [refresh, setRefresh] = useState(0);
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // live values the drawing code reads without redrawing everything
-  const live = useRef({ hideAnswers, search, linkMode, linkFrom });
-  live.current = { hideAnswers, search, linkMode, linkFrom };
+  const live = useRef({ hideAnswers, search, linkMode, linkFrom, studyOn, study, mode, centerId });
+  live.current = { hideAnswers, search, linkMode, linkFrom, studyOn, study, mode, centerId };
+
+  const fillOf = (n: GNode) => {
+    const { studyOn: on, study: st } = live.current;
+    if (!on) return colorOf(n);
+    const s = st.get(n.id);
+    return s ? STUDY[s][0] : NOT_A_CARD;
+  };
 
   const showTree = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tree')) ?? true;
   const showRefs = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-refs')) ?? true;
@@ -114,10 +142,15 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     }
   };
 
-  /** What a click on a bubble does: open it, or (in link mode) pick the two ends of a new link. */
+  /** What a click on a bubble does: show its card, or (in link mode) pick the two ends of a new link. */
   const onBubble = async (n: GNode) => {
     const { linkMode: on, linkFrom: from } = live.current;
-    if (!on) return openRem(n.id);
+    if (!on) {
+      setSel(n.id);
+      setReveal(false);
+      setAdding(false);
+      return;
+    }
     if (!from) return setLinkFrom({ id: n.id, label: n.label });
     setLinkFrom(null);
     setLinkMode(false);
@@ -137,6 +170,117 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   };
   const onBubbleRef = useRef(onBubble);
   onBubbleRef.current = onBubble;
+
+  /** Double-click on empty space: start a new bubble under the page. */
+  const onEmpty = () => {
+    const { mode: m, centerId: c } = live.current;
+    if (m !== 'local' || !c) return flash('Switch to "This page" to add bubbles.');
+    setSel(c);
+    setAdding(true);
+    setAddText('');
+  };
+  const onEmptyRef = useRef(onEmpty);
+  onEmptyRef.current = onEmpty;
+  const openRef = useRef(openRem);
+  openRef.current = openRem;
+
+  const submitAdd = async () => {
+    const text = addText.trim();
+    if (!text || !sel) return;
+    setAddText('');
+    try {
+      await addChild(plugin, sel, text);
+      setCollapsed((c) => {
+        const next = new Set(c);
+        next.delete(sel);
+        return next;
+      });
+      flash(`Added "${short(text, 24)}".`);
+      setRefresh((r) => r + 1);
+    } catch (e: any) {
+      flash(`Could not add it: ${String(e?.message || e)}`);
+    }
+  };
+
+  const unlink = async (fromId: string, toId: string) => {
+    try {
+      const ok = await removeReference(plugin, fromId, toId);
+      flash(ok ? 'Link removed.' : 'That link is not in this bubble\'s own text.');
+      setRefresh((r) => r + 1);
+    } catch (e: any) {
+      flash(`Could not remove the link: ${String(e?.message || e)}`);
+    }
+  };
+
+  const toggleFold = (id: string) =>
+    setCollapsed((c) => {
+      const next = new Set(c);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  /** Save what you see as a PNG picture. */
+  const savePicture = () => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    try {
+      const box = svgEl.getBoundingClientRect();
+      const w = Math.round(box.width);
+      const h = Math.round(box.height);
+      const copy = svgEl.cloneNode(true) as SVGSVGElement;
+      copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      copy.setAttribute('width', String(w));
+      copy.setAttribute('height', String(h));
+      copy.setAttribute('font-family', 'Helvetica, Arial, sans-serif');
+      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('width', '100%');
+      bg.setAttribute('height', '100%');
+      bg.setAttribute('fill', '#1b1f27');
+      copy.insertBefore(bg, copy.firstChild);
+      const src =
+        'data:image/svg+xml;charset=utf-8,' +
+        encodeURIComponent(new XMLSerializer().serializeToString(copy));
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = w * 2;
+        canvas.height = h * 2;
+        const ctx = canvas.getContext('2d')!;
+        ctx.scale(2, 2);
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob((blob) => {
+          if (!blob) return flash('Could not make the picture.');
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'bubble-map.png';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          flash('Picture saved to your downloads as bubble-map.png.');
+        }, 'image/png');
+      };
+      img.onerror = () => flash('Could not make the picture.');
+      img.src = src;
+    } catch (e: any) {
+      flash(`Could not make the picture: ${String(e?.message || e)}`);
+    }
+  };
+
+  // Study colors: ask RemNote how each card is doing
+  useEffect(() => {
+    if (!studyOn || !data) return;
+    let cancelled = false;
+    loadStudy(
+      plugin,
+      data.nodes.filter((n) => n.isCard).map((n) => n.id)
+    )
+      .then((m) => !cancelled && setStudy(m))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [studyOn, data, plugin]);
 
   // 1) Load the bubbles and lines
   const loadingRef = useRef(false);
@@ -174,11 +318,40 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   // 1b) Apply the on-screen switches (line types, cards only) without reloading
   const view = useMemo<GraphData | null>(() => {
     if (!data) return null;
-    let links = data.links.filter((l) => kinds[l.kind]);
-    let keep = new Set(data.nodes.map((n) => n.id));
+    // folded branches: hide everything under a folded bubble
+    const kidsOf = new Map<string, string[]>();
+    for (const n of data.nodes) {
+      if (!n.parentId) continue;
+      if (!kidsOf.has(n.parentId)) kidsOf.set(n.parentId, []);
+      kidsOf.get(n.parentId)!.push(n.id);
+    }
+    const hidden = new Set<string>();
+    const foldCount = new Map<string, number>();
+    for (const id of collapsed) {
+      let count = 0;
+      let queue = kidsOf.get(id) || [];
+      while (queue.length) {
+        const after: string[] = [];
+        for (const k of queue) {
+          if (hidden.has(k)) continue;
+          hidden.add(k);
+          count++;
+          after.push(...(kidsOf.get(k) || []));
+        }
+        queue = after;
+      }
+      if (count) foldCount.set(id, count);
+    }
+    
+    let links = data.links.filter(
+      (l) => kinds[l.kind] && !hidden.has(l.source as string) && !hidden.has(l.target as string)
+    );
+    let keep = new Set(data.nodes.filter((n) => !hidden.has(n.id)).map((n) => n.id));
     if (cardsOnly) {
       const byId = new Map(data.nodes.map((n) => [n.id, n]));
-      keep = new Set(data.nodes.filter((n) => n.isCard || n.isCenter).map((n) => n.id));
+      keep = new Set(
+        data.nodes.filter((n) => !hidden.has(n.id) && (n.isCard || n.isCenter)).map((n) => n.id)
+      );
       // also keep the ideas that cards point at with a [[link]] or a tag
       for (const l of links) {
         if (l.kind === 'child') continue;
@@ -195,10 +368,14 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       degree.set(l.target as string, (degree.get(l.target as string) || 0) + 1);
     }
     const nodes = data.nodes
-      .filter((n) => keep.has(n.id) && (n.isCenter || degree.has(n.id) || (cardsOnly && n.isCard)))
-      .map((n) => ({ ...n, degree: degree.get(n.id) || 0 }));
+      .filter(
+        (n) =>
+          keep.has(n.id) &&
+          (n.isCenter || degree.has(n.id) || foldCount.has(n.id) || (cardsOnly && n.isCard))
+      )
+      .map((n) => ({ ...n, degree: degree.get(n.id) || 0, folded: foldCount.get(n.id) }));
     return { nodes, links, truncated: data.truncated };
-  }, [data, kinds, cardsOnly]);
+  }, [data, kinds, cardsOnly, collapsed]);
 
   // 2) Draw them (bubbles push apart, lines pull together)
   useEffect(() => {
@@ -259,13 +436,27 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     nodeSel
       .append('circle')
       .attr('r', radius)
-      .attr('fill', colorOf)
+      .attr('fill', fillOf)
       .attr('fill-opacity', (n) => (n.isCenter ? 1 : 0.9))
       .attr('stroke', (n) => (n.isCenter ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.35)'))
       .attr('stroke-width', (n) => (n.isCenter ? 2.5 : 1));
 
+    // a folded bubble shows how many bubbles are tucked inside it
+    nodeSel
+      .filter((n) => !!n.folded)
+      .append('text')
+      .attr('class', 'gv-fold')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '0.35em')
+      .attr('fill', '#fff')
+      .attr('font-size', 9)
+      .attr('font-weight', 700)
+      .attr('pointer-events', 'none')
+      .text((n) => `+${n.folded}`);
+
     const textSel = nodeSel
       .append('text')
+      .attr('class', 'gv-name')
       .attr('text-anchor', 'middle')
       .attr('fill', INK)
       .attr('font-weight', (n) => (n.isCenter ? 700 : 400))
@@ -311,6 +502,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     });
 
     let tf: ZoomTransform = zoomIdentity;
+    let clickTimer: ReturnType<typeof setTimeout> | undefined;
     let hovered: string | null = null;
 
     const labelText = (n: GNode) => short(live.current.hideAnswers ? n.hiddenLabel : n.label);
@@ -412,7 +604,15 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       })
       .on('click', (e, n) => {
         if ((e as any).defaultPrevented) return; // was a drag
-        onBubbleRef.current(n);
+        // wait a beat, so a double-click can open the Rem before the card pops up
+        clearTimeout(clickTimer);
+        if (live.current.linkMode) onBubbleRef.current(n);
+        else clickTimer = setTimeout(() => onBubbleRef.current(n), 260);
+      })
+      .on('dblclick', (e, n) => {
+        e.stopPropagation();
+        clearTimeout(clickTimer);
+        if (!live.current.linkMode) openRef.current(n.id);
       });
 
     nodeSel.call(
@@ -445,6 +645,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       });
     zoomRef.current = z;
     svg.call(z).on('dblclick.zoom', null);
+    svg.on('dblclick', () => onEmptyRef.current());
 
     /** Zoom so the whole map fits in the window. */
     const fit = () => {
@@ -483,14 +684,21 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     const hit = (n: GNode) => !!q && n.label.toLowerCase().includes(q);
     select(svgEl)
       .selectAll<SVGCircleElement, GNode>('g.gv-node circle')
-      .attr('fill', (n) => (hit(n) ? MATCH : colorOf(n)))
+      .attr('fill', (n) => (hit(n) ? MATCH : fillOf(n)))
       .attr('r', (n) => (hit(n) ? radius(n) + 4 : radius(n)))
       .attr('stroke', (n) =>
-        linkFrom?.id === n.id ? '#ffffff' : n.isCenter ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.35)'
+        linkFrom?.id === n.id || sel === n.id
+          ? '#ffffff'
+          : n.isCenter
+          ? 'rgba(255,255,255,0.9)'
+          : 'rgba(255,255,255,0.35)'
       )
-      .attr('stroke-width', (n) => (linkFrom?.id === n.id ? 4 : n.isCenter ? 2.5 : 1));
+      .attr('stroke-dasharray', (n) => (n.folded ? '3 2' : null))
+      .attr('stroke-width', (n) =>
+        linkFrom?.id === n.id ? 4 : sel === n.id ? 3 : n.folded ? 2 : n.isCenter ? 2.5 : 1
+      );
     relabelRef.current();
-  }, [search, hideAnswers, view, linkFrom]);
+  }, [search, hideAnswers, view, linkFrom, sel, studyOn, study]);
 
   const btn = (active: boolean): React.CSSProperties => ({
     padding: '5px 10px',
@@ -503,6 +711,9 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     whiteSpace: 'nowrap',
   });
 
+  const selNode = sel ? data?.nodes.find((n) => n.id === sel) : undefined;
+  const selKids = selNode ? data!.nodes.filter((n) => n.parentId === selNode.id) : [];
+  const nameOf = (id: string) => data?.nodes.find((n) => n.id === id)?.label || 'a note not on this map';
   const anyCloze = !!data?.nodes.some((n) => n.hasCloze);
   const anyCard = !!data?.nodes.some((n) => n.isCard);
   const status = note
@@ -600,6 +811,23 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             Cards only
           </button>
         )}
+        {anyCard && (
+          <button
+            style={btn(studyOn)}
+            onClick={() => setStudyOn((v) => !v)}
+            title="Color flashcards by how you are doing: due, missed, new, going well"
+          >
+            Study colors
+          </button>
+        )}
+        {collapsed.size > 0 && (
+          <button style={btn(false)} onClick={() => setCollapsed(new Set())} title="Open every folded branch">
+            Unfold all
+          </button>
+        )}
+        <button style={btn(false)} onClick={savePicture} title="Save the map you see as a picture">
+          Save picture
+        </button>
         <button style={btn(false)} onClick={() => fitRef.current()} title="Zoom to fit the whole map">
           Fit
         </button>
@@ -647,8 +875,140 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <Key dash={dash} text={text} />
           </button>
         ))}
-        <span>Colors = branches</span>
+        {studyOn ? (
+          (Object.keys(STUDY) as Study[]).map((k) => (
+            <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 9, height: 9, borderRadius: 9, background: STUDY[k][0] }} />
+              {STUDY[k][1]}
+            </span>
+          ))
+        ) : (
+          <span>Colors = branches</span>
+        )}
       </div>
+      {selNode && (
+        <div
+          style={{
+            position: 'absolute',
+            left: 8,
+            bottom: 34,
+            width: 320,
+            maxWidth: 'calc(100% - 16px)',
+            maxHeight: '55%',
+            overflowY: 'auto',
+            padding: 10,
+            borderRadius: 10,
+            background: '#1f2430',
+            color: '#e8ebf0',
+            boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+            lineHeight: 1.45,
+          }}
+        >
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <b style={{ flex: 1, fontSize: 13 }}>
+              {hideAnswers && !reveal ? selNode.hiddenLabel : selNode.label}
+            </b>
+            <button style={{ ...btn(false), padding: '1px 7px' }} onClick={() => setSel(null)} title="Close">
+              ✕
+            </button>
+          </div>
+          {selNode.back && (
+            <div style={{ marginTop: 4 }}>
+              <span style={{ opacity: 0.6 }}>Answer: </span>
+              {hideAnswers && !reveal ? '[…]' : selNode.back}
+            </div>
+          )}
+          {hideAnswers && !reveal && (selNode.back || selNode.hasCloze) && (
+            <button style={{ ...btn(false), marginTop: 4, padding: '2px 8px' }} onClick={() => setReveal(true)}>
+              Show answer
+            </button>
+          )}
+          {studyOn && study.get(selNode.id) && (
+            <div style={{ marginTop: 4, color: STUDY[study.get(selNode.id)!][0] }}>
+              Card: {STUDY[study.get(selNode.id)!][1]}
+            </div>
+          )}
+          {selKids.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <span style={{ opacity: 0.6 }}>Under it:</span>
+              <ul style={{ margin: '2px 0 0', paddingLeft: 16 }}>
+                {selKids.slice(0, 8).map((k) => (
+                  <li key={k.id} style={{ cursor: 'pointer' }} onClick={() => setSel(k.id)}>
+                    {short(hideAnswers && !reveal ? k.hiddenLabel : k.label, 60)}
+                  </li>
+                ))}
+              </ul>
+              {selKids.length > 8 && <span style={{ opacity: 0.6 }}>and {selKids.length - 8} more</span>}
+            </div>
+          )}
+          {selNode.refs.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <span style={{ opacity: 0.6 }}>Links to:</span>
+              {selNode.refs.map((id) => (
+                <div key={id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
+                  <span style={{ flex: 1 }}>{short(nameOf(id), 40)}</span>
+                  <button
+                    style={{ ...btn(false), padding: '1px 8px' }}
+                    onClick={() => unlink(selNode.id, id)}
+                    title="Remove this link from the note"
+                  >
+                    Unlink
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            <button style={btn(true)} onClick={() => openRem(selNode.id)}>
+              Open
+            </button>
+            <button style={btn(adding)} onClick={() => setAdding((v) => !v)}>
+              Add bubble
+            </button>
+            <button
+              style={btn(false)}
+              onClick={() => {
+                setLinkMode(true);
+                setLinkFrom({ id: selNode.id, label: selNode.label });
+                setSel(null);
+              }}
+            >
+              Link to…
+            </button>
+            {(selKids.length > 0 || collapsed.has(selNode.id)) && (
+              <button style={btn(false)} onClick={() => toggleFold(selNode.id)}>
+                {collapsed.has(selNode.id) ? 'Unfold' : 'Fold'}
+              </button>
+            )}
+          </div>
+          {adding && (
+            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+              <input
+                autoFocus
+                placeholder="New bubble under this one…"
+                value={addText}
+                onChange={(e) => setAddText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') submitAdd();
+                  if (e.key === 'Escape') setAdding(false);
+                }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  padding: '5px 10px',
+                  borderRadius: 999,
+                  border: '1px solid rgba(138,147,163,0.6)',
+                  background: 'transparent',
+                  color: 'inherit',
+                }}
+              />
+              <button style={btn(true)} onClick={submitAdd}>
+                Add
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {showHelp && (
         <div
           style={{
@@ -670,8 +1030,13 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <li>Each bubble is one Rem (one bullet). The gold bubble is the page you are on.</li>
             <li>Solid lines follow your outline. Each branch has its own color.</li>
             <li>Dashed lines are [[links]]. Dotted lines are tags.</li>
-            <li>Click a bubble to go to it. The map follows you there.</li>
-            <li>"Link bubbles": click one bubble, then another, to add a [[link]] between them.</li>
+            <li>Click a bubble to peek at it: its notes, its answer, and what it links to.</li>
+            <li>Double-click a bubble (or press Open) to go to it. The map follows you there.</li>
+            <li>Double-click empty space to add a new bubble to the page. "Add bubble" on a card adds one under that bubble.</li>
+            <li>"Link bubbles" or "Link to…": pick two bubbles to add a [[link]]. "Unlink" on a card removes one.</li>
+            <li>"Fold" tucks a branch away. The bubble shows how many are inside.</li>
+            <li>"Study colors" paints your flashcards: due, missed, new, going well.</li>
+            <li>"Save picture" saves the map you see as an image.</li>
             <li>The map updates by itself a moment after you stop typing.</li>
             <li>Drag a bubble and let go to watch it spring back. Scroll or pinch to zoom.</li>
             <li>Point at a bubble to read it in full and see what it touches.</li>
