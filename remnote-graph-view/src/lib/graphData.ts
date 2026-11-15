@@ -367,7 +367,14 @@ export async function addReference(plugin: RNPlugin, fromId: string, toId: strin
   if (!from) return 'missing';
   const text: any[] = from.text || [];
   if ([...referencedIds(from.text), ...referencedIds(from.backText)].includes(toId)) return 'exists';
-  await from.setText([...text, ' ', { i: 'q', _id: toId }]);
+  // Same name on both ends (a bullet "Media" linked to the Rem "Media"): swap the word for
+  // the link instead of writing the name twice.
+  const to = (await plugin.rem.findOne(toId)) as any;
+  const same =
+    !!to &&
+    !from.backText?.length &&
+    richTextToLabel(from.text).toLowerCase() === labelsOf(to).label.toLowerCase();
+  await from.setText(same ? [{ i: 'q', _id: toId }] : [...text, ' ', { i: 'q', _id: toId }]);
   return 'added';
 }
 
