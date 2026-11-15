@@ -106,8 +106,17 @@ export function referencedIds(rt: RichTextInterface | undefined): string[] {
 /** If a Rem is nothing but one [[link]], return the id it points at. */
 function soleReference(rt: RichTextInterface | undefined): string | undefined {
   if (!rt) return undefined;
-  const parts = (rt as any[]).filter((el) => !(typeof el === 'string' && !el.trim()));
+  const parts = (rt as any[]).filter((el) => {
+    // ignore spaces around the link, plain or formatted
+    if (typeof el === 'string') return !!el.trim();
+    return !(el && el.i !== 'q' && typeof el.text === 'string' && !el.text.trim());
+  });
   return parts.length === 1 && parts[0]?.i === 'q' && parts[0]._id ? parts[0]._id : undefined;
+}
+
+/** RemNote keeps hidden helper Rems (saved searches) whose text starts with "query:". */
+function isHelper(rem: RemLike): boolean {
+  return richTextToLabel(rem.text).startsWith('query:');
 }
 
 function labelsOf(rem: RemLike, names?: Map<string, string>) {
@@ -282,6 +291,7 @@ export async function loadLocalGraph(
       rems.forEach((rem, i) => {
         const isUnder = under.has(rem._id);
         const kids = rem.children || [];
+        if (isHelper(rem)) return;
         // skip blank Rems, unless they hold part of the page's outline together
         if (!labelsOf(rem, names).label && !(isUnder && (kids.length > 0 || rem._id === centerId)))
           return;
