@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "bolurin_why_loop",
+  "name": "Why Loop",
+  "author": "Bolurin",
+  "repoUrl": "https://github.com/bojof1/Claude-Sandbox",
+  "version": {
+    "major": 1,
+    "minor": 0,
+    "patch": 0
+  },
+  "theme": [],
+  "enableOnMobile": true,
+  "description": "A step by step study guide for lectures: turn objectives into why questions, map the answers, make cards that test reasons, then track misses and a weekly score.",
+  "requestNative": false,
+  "requiredScopes": [
+    {
+      "type": "All",
+      "level": "ReadCreateModifyDelete"
+    }
+  ]
+}

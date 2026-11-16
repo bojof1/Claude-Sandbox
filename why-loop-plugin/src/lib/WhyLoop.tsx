@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlugin } from '@remnote/plugin-sdk';
-import { addChild, QUESTION_SETS, richTextToLabel } from './graphData';
+import { addChild, QUESTION_SETS, richTextToLabel } from './rem';
 
 /**
  * Why Loop tracker: the parts of the study loop that are not the map itself.
@@ -81,7 +81,7 @@ const STEPS_FULL: Step[] = [
       'At least half must blank the reason or what happens next. None may blank only a name.',
       'Add one what-if card.',
       'Check each card: could I get this right just by remembering a word? If yes, rewrite it.',
-      'Then open the Map tab, press Study, and look at Card check.',
+      'If you use the Bubble Map plugin, its Study button has a Card check that counts this for you.',
     ],
     example:
       'Bad: "Gs activates {{adenylate cyclase}}." Good: "The receptor sits across the membrane because {{a water-soluble hormone cannot cross the fatty membrane}}." What-if: "If G-alpha cannot cut GTP, then {{the effector stays on}}."',
@@ -147,7 +147,6 @@ interface Data {
   misses: Miss[];
   weeks: Week[];
 }
-type Score = { t: number; right: number; total: number };
 
 const EMPTY: Data = { lectures: [], misses: [], weeks: [] };
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -190,7 +189,6 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
   const [tab, setTab] = useState<'lecture' | 'misses' | 'week'>('lecture');
   const [data, setData] = useState<Data>(EMPTY);
   const [ready, setReady] = useState(false);
-  const [redraws, setRedraws] = useState<Record<string, Score[]>>({});
   const [pageName, setPageName] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -201,14 +199,6 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
       .catch(() => {})
       .then(() => setReady(true));
   }, [plugin]);
-
-  // redraw scores come from the map's redraw quiz
-  useEffect(() => {
-    plugin.storage
-      .getSynced<Record<string, Score[]>>('bm-redraw')
-      .then((r) => setRedraws(r || {}))
-      .catch(() => {});
-  }, [plugin, tab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,10 +220,7 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
   const now = Date.now();
   const courses = [...new Set([...data.lectures.map((l) => l.course), ...data.weeks.map((w) => w.course)])].filter(Boolean);
   const dueMisses = data.misses.filter((m) => !m.closed && m.due <= now);
-  const lastRedraw = (l: Lecture) => {
-    const s = l.remId ? redraws[l.remId] : undefined;
-    return Math.max(l.redrawn || 0, s?.length ? s[s.length - 1].t : 0);
-  };
+  const lastRedraw = (l: Lecture) => l.redrawn || 0;
   const redrawDue = data.lectures.filter((l) => now - l.t >= 6 * DAY && now - lastRedraw(l) >= 7 * DAY);
 
   // ---------- Lecture tab ----------
@@ -610,7 +597,7 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
         <>
           <div style={box}>
             <b>1. Redraw this week's maps</b>
-            <div style={dim}>Blank page, no sources. Or use Study, Start redraw on the map. This is the most important step.</div>
+            <div style={dim}>Blank page, no sources. Draw the whole map from memory, then compare and fix it in another color. This is the most important step.</div>
             {redrawDue.length === 0 ? (
               <div style={{ marginTop: 4 }}>Nothing is due for a redraw.</div>
             ) : (
@@ -629,7 +616,7 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                     style={pill(false)}
                     onClick={() => save({ ...data, lectures: data.lectures.map((x) => (x.id === l.id ? { ...x, redrawn: Date.now() } : x)) })}
                   >
-                    Done on paper
+                    Done
                   </button>
                 </div>
               ))
