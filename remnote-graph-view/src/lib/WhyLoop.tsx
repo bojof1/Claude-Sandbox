@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlugin } from '@remnote/plugin-sdk';
-import { richTextToLabel } from './graphData';
+import { addChild, QUESTION_SETS, richTextToLabel } from './graphData';
 
 /**
  * Why Loop tracker: the parts of the study loop that are not the map itself.
@@ -11,15 +11,107 @@ import { richTextToLabel } from './graphData';
 const DAY = 24 * 60 * 60 * 1000;
 const KEY = 'wl-data';
 
-const STEPS: [string, string][] = [
-  ['Sort', 'Topic by topic: is there a reason behind it, or do I just memorize it?'],
-  ['Questions', 'Turn the learning objectives into how and why questions. Note the slide range.'],
-  ['Pretest', 'Answer 3 to 5 practice questions cold. Being wrong is fine. Skip if there are none.'],
-  ['Map', 'Sources open, 20 minutes max. Answer the fixed questions in your own words. Write ?? where no reason is given.'],
-  ['Cards', '10 to 15 at most. At least half blank the reason or what happens next. One what-if card.'],
-  ['Quick test', '5 to 7 exam-style questions on this topic. Type "I think it is X because Y" first.'],
-  ['Miss log', 'Log wrong reasoning only, not careless slips.'],
+interface Step {
+  title: string;
+  /** One line, shown in the list of all steps. */
+  how: string;
+  /** What to do, in order. */
+  todo: string[];
+  /** The same step done on a real lecture (G-protein receptors). */
+  example: string;
+  time: string;
+}
+const STEPS_FULL: Step[] = [
+  {
+    title: 'Sort',
+    how: 'Topic by topic: is there a reason behind it, or do I just memorize it?',
+    time: '2 min',
+    todo: [
+      'Skim the slide titles.',
+      'For each topic ask: is there a reason behind this, or do I just have to memorize it?',
+      'Reason topics get the full loop. Memorize topics (names, lists, labels) just get plain cards. Never invent a why for those.',
+      'Not sure? If the slides give a reason, it is a reason topic. If you cannot find one in 2 minutes, treat it as memorize and write ?? next to it.',
+    ],
+    example:
+      'How the G-protein cycle works has reasons, so it gets the loop. The list of G-protein types (Gs, Gi, Gq) is just a list, so plain cards.',
+  },
+  {
+    title: 'Questions',
+    how: 'Turn the learning objectives into how and why questions. Note the slide range.',
+    time: '5 min',
+    todo: [
+      'Find the learning objectives. No objectives? Use practice questions, section headings, or slide titles.',
+      'Rewrite each one as a How or Why question. Any wording is fine.',
+      'Pick the shape: if you can point at it, it is a Thing. If it is a story of events, it is a Process. If you compute something, it is a Calculation.',
+      'Type your questions below, one per line. They go into your page with the fixed questions under each.',
+    ],
+    example:
+      'Objective: "Describe the G-protein cycle." Becomes: "How does a G-protein receptor pass the hormone\'s signal into the cell?" (slides 31 to 35). Shape: Thing.',
+  },
+  {
+    title: 'Pretest',
+    how: 'Answer 3 to 5 practice questions cold. Being wrong is fine. Skip if there are none.',
+    time: '2 min',
+    todo: [
+      'Answer 3 to 5 of the professor\'s practice questions before reading anything.',
+      'Being wrong is fine. Do not read the explanations yet.',
+      'No practice questions, or only a few? Skip this step and save them for later.',
+    ],
+    example: 'The G-protein practice bank had one question, so this step was skipped.',
+  },
+  {
+    title: 'Map',
+    how: 'Sources open, 20 minutes max. Answer the fixed questions in your own words. Write ?? where no reason is given.',
+    time: '20 min max',
+    todo: [
+      'Start the timer. Keep your sources open: slides first, then notes, then search the transcript.',
+      'Under each fixed question, write the answer in your own words. Short phrases and arrows. This is read and rewrite, not a quiz.',
+      'Every arrow needs a because. If the source gives a what but no why, write ??.',
+      'When the timer ends, stop. Write ?? on anything unfinished.',
+    ],
+    example:
+      'Where is it, and why there? "Spans the membrane, because a water-soluble hormone cannot cross the fatty membrane." What if it breaks? "??" (the slides did not say).',
+  },
+  {
+    title: 'Cards',
+    how: '10 to 15 at most. At least half blank the reason or what happens next. One what-if card.',
+    time: '10 min',
+    todo: [
+      'Make 10 to 15 cards at most.',
+      'At least half must blank the reason or what happens next. None may blank only a name.',
+      'Add one what-if card.',
+      'Check each card: could I get this right just by remembering a word? If yes, rewrite it.',
+      'Then open the Map tab, press Study, and look at Card check.',
+    ],
+    example:
+      'Bad: "Gs activates {{adenylate cyclase}}." Good: "The receptor sits across the membrane because {{a water-soluble hormone cannot cross the fatty membrane}}." What-if: "If G-alpha cannot cut GTP, then {{the effector stays on}}."',
+  },
+  {
+    title: 'Quick test',
+    how: '5 to 7 exam-style questions on this topic. Type "I think it is X because Y" first.',
+    time: '10 min',
+    todo: [
+      'Do 5 to 7 exam-style questions on only this topic. Use the professor\'s set first.',
+      'Before you look at the choices, type or say: "I think it is X because Y."',
+      'Enter your score below. A good score right after studying is encouraging, not proof.',
+    ],
+    example: 'G-proteins: 7 of 7, including two twists never seen before.',
+  },
+  {
+    title: 'Miss log',
+    how: 'Log wrong reasoning only, not careless slips.',
+    time: '2 min',
+    todo: [
+      'For each question you got wrong because your reasoning was wrong, log one line in the Miss log tab.',
+      'Skip careless slips like misreading.',
+      'Fix the map where the arrow was wrong, and add a what-if card on it.',
+      'In one week the log brings each miss back. Use a fresh question, not the same one.',
+    ],
+    example:
+      'Question: What dissociates after GTP binds? I said: the hormone-receptor complex. Right reason: G-alpha-GTP leaves the receptor and beta-gamma.',
+  },
 ];
+const STEPS: [string, string][] = STEPS_FULL.map((x) => [x.title, x.how]);
 const MAP_STEP = 3;
 
 interface Lecture {
@@ -30,6 +122,9 @@ interface Lecture {
   remId?: string;
   done: boolean[];
   redrawn?: number;
+  /** Which step the guide is on. */
+  step?: number;
+  quick?: [number, number];
 }
 interface Miss {
   id: string;
@@ -163,6 +258,34 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
     if (rem) await plugin.window.openRem(rem);
   };
 
+  const patch = (l: Lecture, change: Partial<Lecture>) =>
+    save({ ...data, lectures: data.lectures.map((x) => (x.id === l.id ? { ...x, ...change } : x)) });
+  /** Finish the step the guide is on and move to the next one. */
+  const nextStep = (l: Lecture, i: number) =>
+    patch(l, { done: l.done.map((d, j) => (j === i ? true : d)), step: Math.min(i + 1, STEPS.length) });
+
+  const [showAll, setShowAll] = useState(false);
+  const [qText, setQText] = useState('');
+  const [qShape, setQShape] = useState('Thing');
+  const [note, setNote] = useState('');
+  const [score, setScore] = useState({ right: '', total: '' });
+  /** Put the typed questions into the lecture's page, each with its fixed questions under it. */
+  const addQuestions = async (l: Lecture) => {
+    const lines = qText.split('\n').map((x) => x.trim()).filter(Boolean);
+    if (!lines.length) return;
+    if (!l.remId) return setNote('This lecture is not linked to a page. Open the page, then start the lecture again.');
+    try {
+      for (const q of lines) {
+        const id = await addChild(plugin, l.remId, q);
+        for (const sub of QUESTION_SETS[qShape] || []) await addChild(plugin, id, sub);
+      }
+      setQText('');
+      setNote(`Added ${lines.length} question${lines.length === 1 ? '' : 's'} to your page.`);
+    } catch (e: any) {
+      setNote(`Could not add them: ${String(e?.message || e)}`);
+    }
+  };
+
   // 20-minute map timer
   const [left, setLeft] = useState<number | null>(null);
   const tick = useRef<ReturnType<typeof setInterval>>();
@@ -255,15 +378,88 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                     {n}/{STEPS.length} · {day(l.t)}
                   </span>
                 </div>
-                {open && (
+                {open && (() => {
+                  const i = Math.min(l.step ?? Math.max(0, l.done.indexOf(false)), STEPS.length);
+                  const st = STEPS_FULL[i];
+                  return (
                   <>
-                    {STEPS.map(([title, how], i) => (
-                      <label key={title} style={{ display: 'flex', gap: 8, marginTop: 6, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={!!l.done[i]} onChange={() => toggleStep(l, i)} />
-                        <span>
-                          <b>{title}.</b> <span style={dim}>{how}</span>
-                          {i === MAP_STEP && (
-                            <span style={{ display: 'block', marginTop: 4 }}>
+                    <div style={{ display: 'flex', gap: 4, marginTop: 8, flexWrap: 'wrap' }}>
+                      {STEPS_FULL.map((x, j) => (
+                        <button
+                          key={x.title}
+                          title={x.title}
+                          onClick={() => patch(l, { step: j })}
+                          style={{
+                            ...pill(j === i),
+                            padding: '2px 8px',
+                            borderColor: l.done[j] ? GOOD : 'rgba(138,147,163,0.5)',
+                          }}
+                        >
+                          {l.done[j] ? '✓' : j + 1}
+                        </button>
+                      ))}
+                      <button style={{ ...pill(showAll), padding: '2px 8px' }} onClick={() => setShowAll((v) => !v)}>
+                        All steps
+                      </button>
+                    </div>
+                    {showAll &&
+                      STEPS.map(([title, how], j) => (
+                        <label key={title} style={{ display: 'flex', gap: 8, marginTop: 6, cursor: 'pointer' }}>
+                          <input type="checkbox" checked={!!l.done[j]} onChange={() => toggleStep(l, j)} />
+                          <span>
+                            <b>{title}.</b> <span style={dim}>{how}</span>
+                          </span>
+                        </label>
+                      ))}
+                    {!showAll && !st && (
+                      <div style={{ marginTop: 8 }}>
+                        <b style={{ color: GOOD }}>Loop done for this lecture.</b>
+                        <div>
+                          Next: redraw the map from memory around {day(l.t + 7 * DAY)}. It will show up in the Weekly tab.
+                        </div>
+                      </div>
+                    )}
+                    {!showAll && st && (
+                      <div style={{ marginTop: 8 }}>
+                        <b style={{ fontSize: 13 }}>
+                          Step {i + 1} of {STEPS.length}: {st.title}
+                        </b>{' '}
+                        <span style={dim}>({st.time})</span>
+                        <ol style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                          {st.todo.map((t) => (
+                            <li key={t} style={{ marginTop: 2 }}>
+                              {t}
+                            </li>
+                          ))}
+                        </ol>
+                        <div style={{ ...dim, marginTop: 6 }}>
+                          <b>Example:</b> {st.example}
+                        </div>
+                        {i === 1 && (
+                          <div style={{ marginTop: 8 }}>
+                            <textarea
+                              style={{ ...field, minHeight: 70, resize: 'vertical', fontFamily: 'inherit' }}
+                              placeholder={'Your how and why questions, one per line'}
+                              value={qText}
+                              onChange={(e) => setQText(e.target.value)}
+                            />
+                            <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                              <span style={dim}>Shape:</span>
+                              {Object.keys(QUESTION_SETS).map((k) => (
+                                <button key={k} style={{ ...pill(qShape === k), padding: '2px 8px' }} onClick={() => setQShape(k)} title={QUESTION_SETS[k].join('  ')}>
+                                  {k}
+                                </button>
+                              ))}
+                              <button style={pill(true)} onClick={() => addQuestions(l)}>
+                                Add to my page
+                              </button>
+                            </div>
+                            <div style={{ ...dim, marginTop: 4 }}>Under each one it adds: {QUESTION_SETS[qShape].join(' ')}</div>
+                            {note && <div style={{ marginTop: 4, color: GOOD }}>{note}</div>}
+                          </div>
+                        )}
+                        {i === MAP_STEP && (
+                          <div style={{ marginTop: 8 }}>
                               {left === null ? (
                                 <button style={pill(false)} onClick={(e) => (e.preventDefault(), startTimer())}>
                                   Start 20 minute timer
@@ -280,11 +476,51 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                                   </button>
                                 </>
                               )}
-                            </span>
+                          </div>
+                        )}
+                        {i === 5 && (
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}>
+                            <input style={{ ...field, marginTop: 0 }} inputMode="numeric" placeholder="Right" value={score.right} onChange={(e) => setScore({ ...score, right: e.target.value })} />
+                            <input style={{ ...field, marginTop: 0 }} inputMode="numeric" placeholder="Out of" value={score.total} onChange={(e) => setScore({ ...score, total: e.target.value })} />
+                            <button
+                              style={pill(false)}
+                              onClick={() => {
+                                const r = Number(score.right);
+                                const t = Number(score.total);
+                                if (t > 0 && r >= 0 && r <= t) patch(l, { quick: [r, t] });
+                              }}
+                            >
+                              Save
+                            </button>
+                          </div>
+                        )}
+                        {i === 5 && l.quick && (
+                          <div style={{ marginTop: 4 }}>
+                            Saved: {l.quick[0]} of {l.quick[1]}.
+                          </div>
+                        )}
+                        {i === 6 && (
+                          <button style={{ ...pill(false), marginTop: 8 }} onClick={() => setTab('misses')}>
+                            Open the miss log
+                          </button>
+                        )}
+                        <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+                          {i > 0 && (
+                            <button style={pill(false)} onClick={() => patch(l, { step: i - 1 })}>
+                              Back
+                            </button>
                           )}
-                        </span>
-                      </label>
-                    ))}
+                          <button style={pill(true)} onClick={() => nextStep(l, i)}>
+                            {i === STEPS.length - 1 ? 'Finish' : 'Done, next step'}
+                          </button>
+                          {i === 2 && (
+                            <button style={pill(false)} onClick={() => patch(l, { step: i + 1 })}>
+                              Skip
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
                       {l.remId && (
                         <button style={pill(false)} onClick={() => openPage(l.remId)}>
@@ -299,7 +535,8 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                       </button>
                     </div>
                   </>
-                )}
+                  );
+                })()}
               </div>
             );
           })}
