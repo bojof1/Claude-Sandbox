@@ -143,6 +143,11 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [missed, setMissed] = useState<Set<string>>(new Set());
   /** Bubbles whose branches you have already revealed in the redraw. */
   const [asked, setAsked] = useState<Set<string>>(new Set());
+  /** What you typed for each bubble in the redraw, before revealing your notes. */
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  /** Text of the last redraw, ready to paste to an AI for grading. */
+  const [gradeText, setGradeText] = useState('');
+  const [copied, setCopied] = useState(false);
   const [scores, setScores] = useState<Score[]>([]);
   const [study, setStudy] = useState<Map<string, Study>>(new Map());
   const [refresh, setRefresh] = useState(0);
@@ -298,6 +303,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     setGot(new Set());
     setMissed(new Set());
     setAsked(new Set());
+    setAnswers({});
+    setGradeText('');
     setSel(centerId || null);
     setLinkMode(false);
     setShowStudy(false);
@@ -318,8 +325,64 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     setMissed((m) => move(m, !right));
   };
 
+  const labelOf = (id: string) => data?.nodes.find((n) => n.id === id);
+  /** The question asked for a bubble in the redraw. It asks for the idea, not the bubble names. */
+  const promptFor = (n: GNode): string => {
+    if (n.label.trim().endsWith('?')) return `Answer it in your own words: ${n.label}`;
+    if (n.isCenter) return `Explain "${n.label}" from the top. What are the main parts, and why does each one matter?`;
+    const parent = n.parentId ? labelOf(n.parentId) : undefined;
+    const under = parent && !parent.isCenter ? ` (under "${parent.label}")` : '';
+    return `Explain "${n.label}"${under}. What is it or what does it do, and why? What would go wrong without it?`;
+  };
+  const buildGradeText = (): string => {
+    const lines: string[] = [
+      'Please grade my redraw. For each question, compare MY ANSWER to MY NOTES only.',
+      'Mark each one right, close, or wrong, and say in one line what reason I left out or got backwards.',
+      'Do not teach me new material. End with the two ideas I should fix first.',
+      '',
+    ];
+    let i = 0;
+    for (const id of asked) {
+      const n = labelOf(id);
+      if (!n) continue;
+      i++;
+      lines.push(`${i}. QUESTION: ${promptFor(n)}`);
+      lines.push(`MY ANSWER: ${(answers[id] || '').trim() || '(I said it out loud, nothing typed)'}`);
+      lines.push('MY NOTES:');
+      for (const k of tree.kids.get(id) || []) {
+        const kn = labelOf(k);
+        if (kn) lines.push(`- ${kn.label}${kn.back ? ' -> ' + kn.back : ''}`);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
+  };
+  const copyGrade = async () => {
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(gradeText);
+      ok = true;
+    } catch {
+      const el = document.getElementById('bm-grade') as HTMLTextAreaElement | null;
+      if (el) {
+        el.select();
+        try {
+          ok = document.execCommand('copy');
+        } catch {
+          ok = false;
+        }
+      }
+    }
+    setCopied(ok);
+    if (!ok) flash('Could not copy by itself. Click in the box, press Cmd+A, then Cmd+C.');
+  };
+
   const finishQuiz = async () => {
     const total = tree.all.size;
+    if (asked.size) {
+      setGradeText(buildGradeText());
+      setCopied(false);
+    }
     const right = got.size;
     setQuiz(false);
     setSel(null);
@@ -711,6 +774,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
 
     let tf: ZoomTransform = zoomIdentity;
     let clickTimer: ReturnType<typeof setTimeout> | undefined;
+    let pressAt: [number, number] = [0, 0];
+    let dragged = false;
     let hovered: string | null = null;
 
     const labelText = (n: GNode) =>
@@ -786,6 +851,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     sim.on('tick', () => {
       place();
       if (++ticks % 8 === 0) relabel();
+      // in a redraw, keep the growing map framed above the question card while it settles
+      if (live.current.quiz && !userZoomed && ticks <= 80 && ticks % 10 === 0) fitRef.current();
     });
     let userZoomed = false;
     sim.on('end', () => {
@@ -820,13 +887,6 @@ export function GraphView({ centerId, height, onOpened }: Props) {
         setPeek('');
         relabel();
       })
-      .on('click', (e, n) => {
-        if ((e as any).defaultPrevented) return; // was a drag
-        // wait a beat, so a double-click can open the Rem before the card pops up
-        clearTimeout(clickTimer);
-        if (live.current.linkMode) onBubbleRef.current(n);
-        else clickTimer = setTimeout(() => onBubbleRef.current(n), 260);
-      })
       .on('dblclick', (e, n) => {
         e.stopPropagation();
         clearTimeout(clickTimer);
@@ -839,13 +899,24 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           if (!e.active) sim.alphaTarget(0.25).restart();
           n.fx = n.x;
           n.fy = n.y;
+          pressAt = [e.x, e.y];
+          dragged = false;
         })
         .on('drag', (e, n) => {
+          if (Math.hypot(e.x - pressAt[0], e.y - pressAt[1]) > 4) dragged = true;
           n.fx = e.x;
           n.fy = e.y;
         })
         .on('end', (e, n) => {
           if (!e.active) sim.alphaTarget(0);
+          if (!dragged) {
+            // a press without a drag is a click. It is handled here, not in a click event,
+            // because the map can shift under the pointer and the click would land on nothing.
+            // wait a beat, so a double-click can open the Rem before the card pops up
+            clearTimeout(clickTimer);
+            if (live.current.linkMode) onBubbleRef.current(n);
+            else clickTimer = setTimeout(() => onBubbleRef.current(n), 260);
+          }
           // let go: the bubble springs back and its neighbors sway with it
           n.fx = null;
           n.fy = null;
@@ -874,16 +945,19 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       const x1 = Math.max(...xs) + 40;
       const y0 = Math.min(...ys) - 30;
       const y1 = Math.max(...ys) + 40;
-      const k = Math.min(width / (x1 - x0), h / (y1 - y0), 1.6);
+      // in the redraw the question card covers the bottom of the map, so fit into the top part
+      const inQuiz = live.current.quiz;
+      const hh = inQuiz ? h * 0.33 : h;
+      const k = Math.min(width / (x1 - x0), hh / (y1 - y0), inQuiz ? 2.2 : 1.6);
       const t = zoomIdentity
-        .translate(width / 2 - (k * (x0 + x1)) / 2, h / 2 - (k * (y0 + y1)) / 2)
+        .translate(width / 2 - (k * (x0 + x1)) / 2, hh / 2 - (k * (y0 + y1)) / 2)
         .scale(k);
       svg.call(z.transform, t);
     };
     fitRef.current = fit;
 
     place();
-    if (isRefresh) svg.call(z.transform, tfRef.current);
+    if (isRefresh && !live.current.quiz) svg.call(z.transform, tfRef.current);
     else fit();
     // the motion: let the map finish settling on screen
     sim.alpha(isRefresh ? 0.25 : seeded ? 0.12 : 0.5).restart();
@@ -945,7 +1019,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const status = note
     ? note
     : quiz
-    ? `Redraw: ${got.size} right, ${missed.size} missed, ${tree.all.size - got.size - missed.size} to go. Click a bubble marked ? and recall what goes under it.`
+    ? `Redraw: ${got.size} right, ${missed.size} missed, ${tree.all.size - got.size - missed.size} to go. Click a bubble marked ?, answer its question, then check your notes.`
     : linkMode
     ? linkFrom
       ? `Now click the bubble to link "${short(linkFrom.label, 24)}" to.`
@@ -1074,9 +1148,14 @@ export function GraphView({ centerId, height, onOpened }: Props) {
         style={{
           padding: '0 8px',
           opacity: note || linkMode ? 1 : 0.7,
-          minHeight: 20,
+          // a fixed two-line box: if it grew and shrank as you hover, the map would jump under the pointer
+          height: 32,
+          lineHeight: '16px',
+          overflow: 'hidden',
+          flexShrink: 0,
           fontWeight: note || linkMode ? 600 : 400,
         }}
+        title={peek || status}
       >
         {peek || status}
       </div>
@@ -1139,21 +1218,36 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           ) : !asked.has(selNode.id) ? (
             <>
               <div style={{ marginTop: 4 }}>
-                What goes under this? There {quizKids.length === 1 ? 'is 1 thing' : `are ${quizKids.length} things`}.
+                {promptFor(selNode)}
               </div>
               <div style={{ marginTop: 4, ...DIM }}>
-                Say them out loud or write them down first, with the reason for each one that has a reason.
+                Your notes have {quizKids.length === 1 ? '1 point' : `${quizKids.length} points`} here. Type it the way
+                you would explain it to a classmate: "I think ... because ...".
               </div>
+              <textarea
+                style={{ ...FIELD, borderRadius: 8, fontSize: 12, width: '100%', marginTop: 6, minHeight: 64, resize: 'vertical', boxSizing: 'border-box' }}
+                placeholder="Your answer, in your own words"
+                value={answers[selNode.id] || ''}
+                onChange={(e) => setAnswers((a) => ({ ...a, [selNode.id]: e.target.value }))}
+              />
               <button
                 style={{ ...btn(true), marginTop: 8 }}
                 onClick={() => setAsked((a) => new Set(a).add(selNode.id))}
               >
-                Reveal
+                Show my notes
               </button>
             </>
           ) : (
             <>
-              <div style={{ marginTop: 4, ...DIM }}>Mark each one. Did you have it?</div>
+              {(answers[selNode.id] || '').trim() && (
+                <div style={{ marginTop: 4 }}>
+                  <span style={DIM}>You said: </span>
+                  {answers[selNode.id]}
+                </div>
+              )}
+              <div style={{ marginTop: 6, ...DIM }}>
+                Your notes say this. Mark each point: was the idea in your answer? The exact words do not matter.
+              </div>
               {quizKids.map((k) => (
                 <div key={k.id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
                   <span style={{ flex: 1 }}>
@@ -1179,7 +1273,30 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           )}
         </div>
       )}
-      {selNode && !quiz && (
+      {gradeText && !quiz && (
+        <div style={PANEL}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <b style={{ flex: 1, fontSize: 13 }}>Get it graded</b>
+            <button style={{ ...btn(false), padding: '1px 7px' }} onClick={() => setGradeText('')} title="Close">
+              ✕
+            </button>
+          </div>
+          <div style={{ marginTop: 4, ...DIM }}>
+            This is your answers next to your own notes. Copy it and paste it to an AI such as Claude. It will mark each
+            answer right, close or wrong.
+          </div>
+          <textarea
+            id="bm-grade"
+            readOnly
+            value={gradeText}
+            style={{ ...FIELD, borderRadius: 8, fontSize: 11, width: '100%', marginTop: 6, height: 110, boxSizing: 'border-box' }}
+          />
+          <button style={{ ...btn(true), marginTop: 6 }} onClick={copyGrade}>
+            {copied ? 'Copied' : 'Copy for grading'}
+          </button>
+        </div>
+      )}
+      {selNode && !quiz && !gradeText && (
         <div style={PANEL}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <b style={{ flex: 1, fontSize: 13 }}>
@@ -1503,7 +1620,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <li>"Link bubbles" or "Link to…": pick two bubbles to add a [[link]]. "Unlink" on a card removes one.</li>
             <li>"Fold" tucks a branch away. The bubble shows how many are inside.</li>
             <li>"Study" opens the study tools: the redraw quiz, the card check, your ?? list and card colors.</li>
-            <li>Redraw: the map empties to just the topic. Recall what goes under each bubble, reveal, and mark what you had. Do it a week after you make a map.</li>
+            <li>Redraw: the map empties to just the topic. Each bubble asks you a question. Type your answer in your own words, show your notes, and mark what you had. At the end, Copy for grading gives you text to paste to an AI. Do it a week after you make a map.</li>
             <li>"Add card" makes a flashcard under a bubble. "Questions" adds the fixed why questions to answer.</li>
             <li>The map remembers how you arranged each page.</li>
             <li>"Save picture" saves the map you see as an image.</li>
