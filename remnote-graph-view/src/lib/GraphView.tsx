@@ -44,10 +44,14 @@ const STUDY: Record<Study, [string, string]> = {
   strong: ['#36B37E', 'going well'],
 };
 const NOT_A_CARD = '#59616E';
+/** The calm gray look: plain bubbles, the open page a little brighter. */
+const PLAIN = '#A3A9B3';
+const PLAIN_CENTER = '#E6E8EC';
+const PLAIN_LINE = '#6B7280';
 const GOT = '#36B37E';
 const MISSED = '#F2994A';
 /** What the bubble colors mean right now. */
-type Paint = 'branch' | 'study' | 'check' | 'open' | 'missed';
+type Paint = 'plain' | 'branch' | 'study' | 'check' | 'open' | 'missed';
 type Score = { t: number; right: number; total: number };
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -134,7 +138,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [adding, setAdding] = useState<false | 'bubble' | 'card' | 'set'>(false);
   const [addText, setAddText] = useState('');
   const [addBack, setAddBack] = useState('');
-  const [paint, setPaint] = useState<Paint>('branch');
+  const [paint, setPaint] = useState<Paint>('plain');
   const studyOn = paint === 'study';
   const [showStudy, setShowStudy] = useState(false);
   /** Redraw quiz: names are hidden until you recall them. */
@@ -178,6 +182,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       return k === 'why' ? GOT : k === 'name' ? MISSED : NOT_A_CARD;
     }
     if (c.paint === 'open') return n.label.includes('??') ? MATCH : NOT_A_CARD;
+    if (c.paint === 'plain') return n.isCenter ? PLAIN_CENTER : PLAIN;
     return colorOf(n);
   };
 
@@ -310,7 +315,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     setShowStudy(false);
     setCollapsed(new Set());
     setCardsOnly(false);
-    setPaint('branch');
+    setPaint('plain');
     setQuiz(true);
   };
 
@@ -390,7 +395,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     const all = new Set(missed);
     for (const id of tree.all) if (!got.has(id)) all.add(id);
     setMissed(all);
-    setPaint(all.size ? 'missed' : 'branch');
+    setPaint(all.size ? 'missed' : 'plain');
     flash(
       `Redraw score: ${right} of ${total} (${total ? Math.round((100 * right) / total) : 0}%).` +
         (all.size ? ' Orange bubbles are the ones to fix.' : ' Nothing missed.')
@@ -691,6 +696,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       .selectAll('path')
       .data(links)
       .join('path')
+      .attr('class', 'gv-link')
       .attr('stroke-linecap', 'round')
       .attr('stroke-width', (l) => (l.kind === 'child' ? 1.6 : 1.3))
       .attr('stroke-dasharray', (l) => (l.kind === 'ref' ? '6 4' : l.kind === 'tag' ? '2 5' : null))
@@ -974,6 +980,16 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     if (!svgEl) return;
     const q = search.trim().toLowerCase();
     const hit = (n: GNode) => !!q && n.label.toLowerCase().includes(q);
+    const plain = paint === 'plain' && !quiz;
+    select(svgEl)
+      .selectAll<SVGPathElement, GLink>('path.gv-link')
+      .attr('stroke', (l) => {
+        if (plain) return PLAIN_LINE;
+        if (l.kind !== 'child') return INK;
+        const a = l.source as GNode;
+        const b = l.target as GNode;
+        return colorOf(a.isCenter ? b : a.group ? a : b);
+      });
     select(svgEl)
       .selectAll<SVGCircleElement, GNode>('g.gv-node circle')
       .attr('fill', (n) => (hit(n) ? MATCH : fillOf(n)))
@@ -981,6 +997,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       .attr('stroke', (n) =>
         linkFrom?.id === n.id || sel === n.id
           ? '#ffffff'
+          : plain
+          ? 'none'
           : n.isCenter
           ? 'rgba(255,255,255,0.9)'
           : 'rgba(255,255,255,0.35)'
@@ -1119,7 +1137,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           </button>
         ) : (
           <button
-            style={btn(showStudy || paint !== 'branch')}
+            style={btn(showStudy || (paint !== 'branch' && paint !== 'plain'))}
             onClick={() => setShowStudy((v) => !v)}
             title="Redraw quiz, card check, open questions, study colors"
           >
@@ -1204,6 +1222,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           </span>
         ))}
         {!quiz && paint === 'branch' && <span>Colors = branches</span>}
+        {!quiz && paint === 'plain' && <span>Double-click a bubble to open it</span>}
       </div>
       {selNode && quiz && (
         <div style={PANEL}>
@@ -1537,7 +1556,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
                 <div style={DIM}>A guess from answer length: 1 or 2 words counts as a name.</div>
                 <button
                   style={{ ...btn(paint === 'check'), marginTop: 6 }}
-                  onClick={() => setPaint(paint === 'check' ? 'branch' : 'check')}
+                  onClick={() => setPaint(paint === 'check' ? 'plain' : 'check')}
                 >
                   Show on map
                 </button>
@@ -1561,7 +1580,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
                 {openQs.length > 10 && <div style={DIM}>and {openQs.length - 10} more</div>}
                 <button
                   style={{ ...btn(paint === 'open'), marginTop: 6 }}
-                  onClick={() => setPaint(paint === 'open' ? 'branch' : 'open')}
+                  onClick={() => setPaint(paint === 'open' ? 'plain' : 'open')}
                 >
                   Show on map
                 </button>
@@ -1572,6 +1591,9 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           <div style={{ marginTop: 12 }}>
             <b>Colors</b>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+              <button style={btn(paint === 'plain')} onClick={() => setPaint('plain')} title="Calm gray bubbles">
+                Plain
+              </button>
               <button style={btn(paint === 'branch')} onClick={() => setPaint('branch')}>
                 Branches
               </button>

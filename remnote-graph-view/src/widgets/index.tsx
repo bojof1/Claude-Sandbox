@@ -34,7 +34,7 @@ async function onActivate(plugin: ReactRNPlugin) {
 
   // Big map in a pop-up window
   await plugin.app.registerWidget('graph_popup', WidgetLocation.Popup, {
-    dimensions: { height: 640, width: 960 },
+    dimensions: { height: 820, width: 1300 },
   });
   // Smaller map in the right sidebar that follows the open page
   await plugin.app.registerWidget('graph_sidebar', WidgetLocation.RightSidebar, {
@@ -44,6 +44,17 @@ async function onActivate(plugin: ReactRNPlugin) {
     widgetTabIcon: `${plugin.rootURL}logo.svg`,
   });
 
+  const openBig = async () => {
+    const remId = await currentRemId(plugin);
+    await plugin.widget.openPopup('graph_popup', { remId });
+  };
+  // a short shortcut as well, Cmd+G (Ctrl+G on Windows)
+  await plugin.app.registerCommand({
+    id: 'open-graph-view-short',
+    name: 'Open Bubble Map (short key)',
+    keyboardShortcut: 'mod+g',
+    action: openBig,
+  });
   await plugin.app.registerCommand({
     id: 'open-graph-view',
     name: 'Open Bubble Map',

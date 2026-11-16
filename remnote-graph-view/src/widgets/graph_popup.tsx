@@ -7,8 +7,8 @@ export const GraphPopup = () => {
   const centerId: string | undefined = ctx?.contextData?.remId ?? ctx?.focusedRemId;
 
   return (
-    <div style={{ width: '100%', height: 620 }}>
-      <GraphView centerId={centerId} height={620} onOpened={() => plugin.widget.closePopup()} />
+    <div style={{ width: '100%', height: 800 }}>
+      <GraphView centerId={centerId} height={800} onOpened={() => plugin.widget.closePopup()} />
     </div>
   );
 };
