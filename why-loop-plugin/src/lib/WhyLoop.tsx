@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlugin } from '@remnote/plugin-sdk';
-import { addChild, QUESTION_SETS, richTextToLabel } from './rem';
+import { addCard, addChild, copyText, QUESTION_SETS, richTextToLabel } from './rem';
 
 /**
  * Why Loop tracker: the parts of the study loop that are not the map itself.
@@ -125,6 +125,9 @@ interface Lecture {
   /** Which step the guide is on. */
   step?: number;
   quick?: [number, number];
+  /** Teach it: your explanation and your own three checks. */
+  teach?: string;
+  teachOk?: boolean[];
 }
 interface Miss {
   id: string;
@@ -135,6 +138,7 @@ interface Miss {
   right: string;
   due: number;
   closed?: number;
+  lectureId?: string;
 }
 interface Week {
   t: number;
@@ -146,9 +150,17 @@ interface Data {
   lectures: Lecture[];
   misses: Miss[];
   weeks: Week[];
+  /** Next exam per course, as YYYY-MM-DD. */
+  exams: Record<string, string>;
+  /** Your weekly review day, 0 = Sunday. */
+  weeklyDay?: number;
+  /** A tag you set by hand, kept until that course's exam passes. */
+  override: Record<string, 'full' | 'cards'>;
 }
 
-const EMPTY: Data = { lectures: [], misses: [], weeks: [] };
+const EMPTY: Data = { lectures: [], misses: [], weeks: [], exams: {}, override: {} };
+const TEACH_CHECKS = ['I gave the reason', 'My arrows go the right way', 'I explained every big word'];
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const uid = () => Math.random().toString(36).slice(2, 10);
 const day = (t: number) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const pct = (r: number, n: number) => (n ? Math.round((100 * r) / n) : 0);
@@ -186,7 +198,7 @@ const GOOD = '#36B37E';
 
 export function WhyLoop({ pageId }: { pageId: string | undefined }) {
   const plugin = usePlugin();
-  const [tab, setTab] = useState<'lecture' | 'misses' | 'week'>('lecture');
+  const [tab, setTab] = useState<'today' | 'lecture' | 'misses' | 'week'>('today');
   const [data, setData] = useState<Data>(EMPTY);
   const [ready, setReady] = useState(false);
   const [pageName, setPageName] = useState('');
@@ -218,10 +230,171 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
   };
 
   const now = Date.now();
-  const courses = [...new Set([...data.lectures.map((l) => l.course), ...data.weeks.map((w) => w.course)])].filter(Boolean);
+  const courses = [
+    ...new Set([...data.lectures.map((l) => l.course), ...data.weeks.map((w) => w.course), ...Object.keys(data.exams)]),
+  ].filter(Boolean);
   const dueMisses = data.misses.filter((m) => !m.closed && m.due <= now);
   const lastRedraw = (l: Lecture) => l.redrawn || 0;
   const redrawDue = data.lectures.filter((l) => now - l.t >= 6 * DAY && now - lastRedraw(l) >= 7 * DAY);
+
+  // ---------- Triage: which course gets the full loop ----------
+  const examTime = (c: string) => {
+    const d = data.exams[c];
+    if (!d) return 0;
+    const t = new Date(`${d}T23:59:00`).getTime();
+    return t >= now ? t : 0;
+  };
+  const byExam = courses.filter((c) => examTime(c)).sort((a, b) => examTime(a) - examTime(b));
+  const weekPct = (c: string) => {
+    const rows = data.weeks.filter((w) => w.course === c);
+    return rows.length >= 2 ? pct(rows[rows.length - 1].right, rows[rows.length - 1].total) : null;
+  };
+  const fullSet = new Set<string>();
+  if (byExam.length) {
+    fullSet.add(byExam[0]);
+    const scored = courses.filter((c) => c !== byExam[0] && weekPct(c) !== null).sort((a, b) => weekPct(a)! - weekPct(b)!);
+    const second = scored[0] || byExam[1];
+    if (second) fullSet.add(second);
+  }
+  /** 'full' = whole loop, 'cards' = cards only, '' = no exam dates yet so no tag. */
+  const tagOf = (c: string): '' | 'full' | 'cards' => {
+    if (!c || !byExam.length) return '';
+    if (data.override[c] && examTime(c)) return data.override[c];
+    return fullSet.has(c) ? 'full' : 'cards';
+  };
+  const flipTag = (c: string) => save({ ...data, override: { ...data.override, [c]: tagOf(c) === 'full' ? 'cards' : 'full' } });
+  const daysTo = (c: string) => Math.max(0, Math.ceil((examTime(c) - now) / DAY));
+
+  // ---------- Today: the one thing to do next ----------
+  const unfinished = data.lectures.filter((l) => l.done.some((d) => !d));
+  const fresh = unfinished
+    .filter((l) => now - l.t <= 2 * DAY)
+    .sort((a, b) => (tagOf(a.course) === 'cards' ? 1 : 0) - (tagOf(b.course) === 'cards' ? 1 : 0) || b.t - a.t);
+  const late = unfinished.filter((l) => now - l.t > 2 * DAY);
+  const lastWeekT = Math.max(0, ...data.weeks.map((w) => w.t));
+  const weeklyToday = data.weeklyDay === new Date().getDay() && now - lastWeekT > 5 * DAY;
+  const lname = (l: Lecture) => `${l.course ? `${l.course}: ` : ''}${l.name}`;
+  const stepOf = (l: Lecture) => Math.min(l.step ?? Math.max(0, l.done.indexOf(false)), STEPS.length - 1);
+  const goLecture = (l: Lecture, step?: number) => {
+    if (step !== undefined) patch(l, { step });
+    setOpenId(l.id);
+    setTab('lecture');
+  };
+  interface Task {
+    key: string;
+    text: string;
+    sub?: string;
+    button: string;
+    go: () => void;
+    extra?: { button: string; go: () => void };
+  }
+  const tasks: Task[] = [];
+  if (dueMisses.length)
+    tasks.push({
+      key: 'miss',
+      text: `Re-test ${dueMisses.length} ${dueMisses.length === 1 ? 'miss' : 'misses'} from last week`,
+      sub: 'Use a fresh question on the same idea.',
+      button: 'Do re-tests',
+      go: () => setTab('misses'),
+    });
+  for (const l of fresh) {
+    const cardsOnly = tagOf(l.course) === 'cards';
+    const i = cardsOnly ? Math.max(stepOf(l), 4) : stepOf(l);
+    tasks.push({
+      key: l.id,
+      text: `${lname(l)}`,
+      sub: `Step ${i + 1}: ${STEPS_FULL[i].title} (${STEPS_FULL[i].time})${cardsOnly ? '. Cards only for this course right now.' : ''}`,
+      button: i === MAP_STEP ? 'Start 20 min map' : `Go to step ${i + 1}`,
+      go: () => {
+        goLecture(l, i);
+        if (i === MAP_STEP) startTimer();
+      },
+    });
+  }
+  for (const l of late)
+    tasks.push({
+      key: l.id,
+      text: `${lname(l)}`,
+      sub: `Late (started ${day(l.t)}). Do the cards and the quick test only.`,
+      button: 'Go to cards',
+      go: () => goLecture(l, Math.max(stepOf(l), 4)),
+      extra: { button: 'Mark done', go: () => patch(l, { done: l.done.map(() => true), step: STEPS.length }) },
+    });
+  for (const l of redrawDue)
+    tasks.push({
+      key: `r${l.id}`,
+      text: `Redraw ${lname(l)} from memory`,
+      sub: 'Blank page or the Bubble Map redraw. No sources.',
+      button: 'Open redraws',
+      go: () => setTab('week'),
+    });
+  if (weeklyToday)
+    tasks.push({ key: 'wk', text: 'Weekly review', sub: 'Mixed question set and your weekly number.', button: 'Open Weekly', go: () => setTab('week') });
+
+  // ---------- Quick miss ----------
+  const [qm, setQm] = useState({ open: false, paste: false, question: '', said: '', right: '', lectureId: '', bulk: '' });
+  const [offer, setOffer] = useState<{ lectureId: string; right: string } | null>(null);
+  const [qmNote, setQmNote] = useState('');
+  const recent = data.lectures.slice(0, 10);
+  const bulkRows = qm.bulk
+    .split('\n')
+    .map((line) => line.split('|').map((x) => x.trim()))
+    .filter((p) => p[0] && p.length >= 2 && p[p.length - 1]);
+  const saveQuick = () => {
+    const lec = data.lectures.find((l) => l.id === (qm.lectureId || recent[0]?.id));
+    const rows = qm.paste
+      ? bulkRows.map((p) => ({ question: p[0], said: p.length >= 3 ? p[1] : '', right: p[p.length - 1] }))
+      : qm.question.trim() && qm.right.trim()
+      ? [{ question: qm.question.trim(), said: qm.said.trim(), right: qm.right.trim() }]
+      : [];
+    if (!rows.length) return setQmNote(qm.paste ? 'Each line needs: question | what I said | right reason' : 'It needs the question and the right reason.');
+    const made: Miss[] = rows.map((r) => ({
+      id: uid(),
+      t: Date.now(),
+      due: Date.now() + 7 * DAY,
+      where: lec ? lname(lec) : '',
+      lectureId: lec?.id,
+      ...r,
+    }));
+    save({ ...data, misses: [...made, ...data.misses] });
+    setQm({ ...qm, question: '', said: '', right: '', bulk: '' });
+    setQmNote(`Logged ${made.length}. Re-test on ${day(made[0].due)}.`);
+    setOffer(lec?.remId && made.length === 1 ? { lectureId: lec.id, right: made[0].right } : null);
+  };
+  const addWhatIf = async () => {
+    const lec = data.lectures.find((l) => l.id === offer?.lectureId);
+    if (!lec?.remId || !offer) return;
+    try {
+      await addCard(plugin, lec.remId, 'What if (rewrite me): the step I got wrong were changed or blocked. What happens, and why?', offer.right);
+      setQmNote('Card added to the lecture page. Reword the front so it names the step.');
+    } catch (e: any) {
+      setQmNote(`Could not add the card: ${String(e?.message || e)}`);
+    }
+    setOffer(null);
+  };
+
+  // ---------- Teach it ----------
+  const [teachNote, setTeachNote] = useState('');
+  const teachText = (l: Lecture) =>
+    [
+      'Please check my explanation. I wrote it from memory for a first-year student.',
+      'Check three things: is the reason right, do the arrows go the right way, and is every big word explained?',
+      'Do not teach me new material. Tell me which sentence to fix first.',
+      '',
+      `TOPIC: ${lname(l)}`,
+      `MY EXPLANATION: ${l.teach || ''}`,
+      `MY OWN CHECK, NOT SURE ABOUT: ${TEACH_CHECKS.filter((_, j) => !l.teachOk?.[j]).join('; ') || 'nothing'}`,
+    ].join('\n');
+  const addOpenQ = async (l: Lecture) => {
+    if (!l.remId) return setTeachNote('This lecture is not linked to a page.');
+    const no = TEACH_CHECKS.filter((_, j) => !l.teachOk?.[j]);
+    try {
+      await addChild(plugin, l.remId, `?? Explain again from memory (${no.join('; ').toLowerCase()})`);
+      setTeachNote('Added a ?? note to the lecture page.');
+    } catch (e: any) {
+      setTeachNote(`Could not add it: ${String(e?.message || e)}`);
+    }
+  };
 
   // ---------- Lecture tab ----------
   const [course, setCourse] = useState('');
@@ -310,6 +483,7 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
 
   // ---------- Weekly ----------
   const [wk, setWk] = useState({ course: '', right: '', total: '' });
+  const [newCourse, setNewCourse] = useState('');
   const addWeek = () => {
     const right = Number(wk.right);
     const total = Number(wk.total);
@@ -323,6 +497,9 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
   return (
     <div style={{ padding: 8, fontSize: 12, lineHeight: 1.45, overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button style={pill(tab === 'today')} onClick={() => setTab('today')}>
+          Today
+        </button>
         <button style={pill(tab === 'lecture')} onClick={() => setTab('lecture')}>
           Lectures
         </button>
@@ -339,8 +516,68 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
         ))}
       </datalist>
 
-      {tab === 'lecture' && (
+      {tab === 'today' && (
         <>
+          {tasks.length > 0 ? (
+            <div style={{ ...box, borderColor: '#4C9AFF' }}>
+              <div style={dim}>Now</div>
+              <b style={{ fontSize: 14 }}>{tasks[0].text}</b>
+              {tasks[0].sub && <div>{tasks[0].sub}</div>}
+              <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                <button style={{ ...pill(true), padding: '8px 16px', fontSize: 13 }} onClick={tasks[0].go}>
+                  {tasks[0].button}
+                </button>
+                {tasks[0].extra && (
+                  <button style={pill(false)} onClick={tasks[0].extra.go}>
+                    {tasks[0].extra.button}
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div style={box}>
+              <b style={{ color: GOOD }}>{data.lectures.length ? 'Done for today.' : 'Welcome.'}</b>
+              <div>{data.lectures.length ? 'Nothing is due. Had a new lecture? Start it below.' : 'Which lecture did you have today? Start it below and this screen will tell you what to do next.'}</div>
+            </div>
+          )}
+          {tasks.length > 1 && (
+            <div style={box}>
+              <div style={dim}>Also today</div>
+              {tasks.slice(1, 4).map((t) => (
+                <div key={t.key} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
+                  <span style={{ flex: 1 }}>
+                    {t.text}
+                    {t.sub && <div style={dim}>{t.sub}</div>}
+                  </span>
+                  <button style={pill(false)} onClick={t.go}>
+                    {t.button}
+                  </button>
+                </div>
+              ))}
+              {tasks.length > 4 && <div style={{ ...dim, marginTop: 6 }}>and {tasks.length - 4} more after these</div>}
+            </div>
+          )}
+          {byExam.length > 0 && (
+            <div style={box}>
+              <div style={dim}>This week's focus. Tap a tag to change it.</div>
+              {courses.map((c) => (
+                <div key={c} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+                  <span style={{ flex: 1 }}>
+                    {c}
+                    {examTime(c) ? <span style={dim}> · exam in {daysTo(c)} {daysTo(c) === 1 ? 'day' : 'days'}</span> : null}
+                  </span>
+                  <button style={{ ...pill(tagOf(c) === 'full'), padding: '2px 8px' }} onClick={() => flipTag(c)}>
+                    {tagOf(c) === 'full' ? 'Full loop' : 'Cards only'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {byExam.length === 0 && data.lectures.length > 0 && (
+            <div style={{ ...dim, marginTop: 8 }}>
+              Add your exam dates in Weekly, and this screen will say which course gets the full loop.
+            </div>
+          )}
           <div style={box}>
             <b>Start a lecture</b>
             <div style={dim}>Do this within a day of class. Open the lecture's page first so it gets linked.</div>
@@ -350,7 +587,70 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
               Start
             </button>
           </div>
-          {data.lectures.length === 0 && <div style={{ ...dim, marginTop: 8 }}>No lectures yet.</div>}
+          <div style={box}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }} onClick={() => setQm({ ...qm, open: !qm.open })}>
+              <b style={{ flex: 1 }}>Quick miss</b>
+              <span style={dim}>{qm.open ? 'Hide' : 'Got a practice question wrong? Log it'}</span>
+            </div>
+            {qm.open && (
+              <>
+                <div style={dim}>Only wrong reasoning, not careless slips. It comes back for a re-test in one week.</div>
+                {qm.paste ? (
+                  <>
+                    <textarea
+                      style={{ ...field, minHeight: 80, resize: 'vertical', fontFamily: 'inherit' }}
+                      placeholder={'One miss per line:\nquestion | what I said | right reason'}
+                      value={qm.bulk}
+                      onChange={(e) => setQm({ ...qm, bulk: e.target.value })}
+                    />
+                    <div style={dim}>{bulkRows.length} {bulkRows.length === 1 ? 'miss' : 'misses'} read so far.</div>
+                  </>
+                ) : (
+                  <>
+                    <input style={field} placeholder="The question (a few words is fine)" value={qm.question} onChange={(e) => setQm({ ...qm, question: e.target.value })} />
+                    <input style={field} placeholder="What I said" value={qm.said} onChange={(e) => setQm({ ...qm, said: e.target.value })} />
+                    <input style={field} placeholder="The right reason" value={qm.right} onChange={(e) => setQm({ ...qm, right: e.target.value })} />
+                  </>
+                )}
+                {recent.length > 0 && (
+                  <select style={field} value={qm.lectureId || recent[0].id} onChange={(e) => setQm({ ...qm, lectureId: e.target.value })}>
+                    {recent.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {lname(l)}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
+                  <button style={pill(true)} onClick={saveQuick}>
+                    {qm.paste ? 'Log them all' : 'Log it'}
+                  </button>
+                  <button style={pill(false)} onClick={() => setQm({ ...qm, paste: !qm.paste })}>
+                    {qm.paste ? 'One at a time' : 'Paste several'}
+                  </button>
+                </div>
+                {qmNote && <div style={{ marginTop: 4, color: GOOD }}>{qmNote}</div>}
+                {offer && (
+                  <div style={{ marginTop: 6 }}>
+                    Add a what-if card to that lecture's page?{' '}
+                    <button style={pill(true)} onClick={addWhatIf}>
+                      Yes
+                    </button>{' '}
+                    <button style={pill(false)} onClick={() => setOffer(null)}>
+                      No
+                    </button>
+                    <div style={dim}>It makes a starter card with the right reason as the answer. You reword the front.</div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === 'lecture' && (
+        <>
+          {data.lectures.length === 0 && <div style={{ ...dim, marginTop: 8 }}>Start a lecture from the Today tab.</div>}
           {data.lectures.map((l) => {
             const n = l.done.filter(Boolean).length;
             const open = openId === l.id;
@@ -486,6 +786,59 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                             Saved: {l.quick[0]} of {l.quick[1]}.
                           </div>
                         )}
+                        {i === 5 && (
+                          <div style={{ ...box, marginTop: 10 }}>
+                            <b>Teach it</b> <span style={dim}>(about 3 min)</span>
+                            <div>
+                              Pick the idea you felt least sure about. Explain it to a first-year student in about 5
+                              sentences. No notes, and no big words without saying what they mean.
+                            </div>
+                            <textarea
+                              style={{ ...field, minHeight: 80, resize: 'vertical', fontFamily: 'inherit' }}
+                              placeholder="Your explanation, from memory"
+                              value={l.teach || ''}
+                              onChange={(e) => patch(l, { teach: e.target.value })}
+                            />
+                            <div style={{ ...dim, marginTop: 6 }}>Now open your notes and check yourself:</div>
+                            {TEACH_CHECKS.map((text, j) => (
+                              <label key={text} style={{ display: 'flex', gap: 8, marginTop: 3, cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={!!l.teachOk?.[j]}
+                                  onChange={(e) => {
+                                    const row = [...(l.teachOk || [false, false, false])];
+                                    row[j] = e.target.checked;
+                                    patch(l, { teachOk: row });
+                                  }}
+                                />
+                                {text}
+                              </label>
+                            ))}
+                            <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                              {l.remId && (
+                                <button style={pill(false)} onClick={() => openPage(l.remId)}>
+                                  Show my notes
+                                </button>
+                              )}
+                              {(l.teach || '').trim() && (l.teachOk || []).filter(Boolean).length < 3 && l.remId && (
+                                <button style={pill(false)} onClick={() => addOpenQ(l)}>
+                                  Add a ?? to my page
+                                </button>
+                              )}
+                              {(l.teach || '').trim() && (
+                                <button
+                                  style={pill(false)}
+                                  onClick={async () =>
+                                    setTeachNote((await copyText(teachText(l))) ? 'Copied. Paste it to an AI such as Claude if you want a second check.' : 'Could not copy from here.')
+                                  }
+                                >
+                                  Copy for checking
+                                </button>
+                              )}
+                            </div>
+                            {teachNote && <div style={{ marginTop: 4, color: GOOD }}>{teachNote}</div>}
+                          </div>
+                        )}
                         {i === 6 && (
                           <button style={{ ...pill(false), marginTop: 8 }} onClick={() => setTab('misses')}>
                             Open the miss log
@@ -595,6 +948,49 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
 
       {tab === 'week' && (
         <>
+          <div style={box}>
+            <b>Exam dates</b>
+            <div style={dim}>The nearest exam gets the full loop. Type each date once.</div>
+            {courses.map((c) => (
+              <div key={c} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+                <span style={{ flex: 1 }}>{c}</span>
+                <input
+                  type="date"
+                  style={{ ...field, width: 150, marginTop: 0 }}
+                  value={data.exams[c] || ''}
+                  onChange={(e) => save({ ...data, exams: { ...data.exams, [c]: e.target.value } })}
+                />
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <input style={{ ...field, marginTop: 0 }} placeholder="Add a course" value={newCourse} onChange={(e) => setNewCourse(e.target.value)} />
+              <button
+                style={pill(false)}
+                onClick={() => {
+                  const c = newCourse.trim();
+                  if (c && !(c in data.exams)) save({ ...data, exams: { ...data.exams, [c]: '' } });
+                  setNewCourse('');
+                }}
+              >
+                Add
+              </button>
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}>
+              <span style={{ flex: 1 }}>My weekly review day</span>
+              <select
+                style={{ ...field, width: 150, marginTop: 0 }}
+                value={data.weeklyDay ?? ''}
+                onChange={(e) => save({ ...data, weeklyDay: e.target.value === '' ? undefined : Number(e.target.value) })}
+              >
+                <option value="">Not set</option>
+                {DAYS.map((d, j) => (
+                  <option key={d} value={j}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           <div style={box}>
             <b>1. Redraw this week's maps</b>
             <div style={dim}>Blank page, no sources. Draw the whole map from memory, then compare and fix it in another color. This is the most important step.</div>

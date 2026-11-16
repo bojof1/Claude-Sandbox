@@ -37,3 +37,10 @@ npm install
 npm run dev   # serves on http://localhost:8081
 npm run build # makes PluginZip.zip
 ```
+
+## New in 1.1
+
+- **Today.** Opens to the one thing to do next: re-tests due, today's lecture step, late lectures, redraws, the weekly review.
+- **Exam dates.** Type each course's next exam in Weekly. The nearest exam gets the full loop, the rest get cards only. Tap a tag to change it.
+- **Quick miss.** Log a wrong answer in four boxes, or paste several lines as `question | what I said | right reason`. It can add a starter what-if card to the lecture page.
+- **Teach it.** After the quick test, explain your weakest idea from memory in about 5 sentences, check yourself with three boxes, and copy it for a second check if you want.

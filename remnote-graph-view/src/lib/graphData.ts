@@ -127,8 +127,12 @@ function soleReference(rt: RichTextInterface | undefined): string | undefined {
 }
 
 /** RemNote keeps hidden helper Rems (saved searches) whose text starts with "query:". */
+/** The start of a redraw reminder card. Those cards stay off the map. */
+export const REDRAW_CARD = 'Redraw from memory:';
+
 function isHelper(rem: RemLike): boolean {
-  return richTextToLabel(rem.text).startsWith('query:');
+  const t = richTextToLabel(rem.text);
+  return t.startsWith('query:') || t.startsWith(REDRAW_CARD);
 }
 
 function labelsOf(rem: RemLike, names?: Map<string, string>) {

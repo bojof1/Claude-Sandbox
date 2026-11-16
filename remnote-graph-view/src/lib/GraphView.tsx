@@ -20,6 +20,7 @@ import {
   loadGlobalGraph,
   loadLocalGraph,
   loadStudy,
+  REDRAW_CARD,
   removeReference,
   type Study,
   type GLink,
@@ -51,8 +52,22 @@ const PLAIN_LINE = '#6B7280';
 const GOT = '#36B37E';
 const MISSED = '#F2994A';
 /** What the bubble colors mean right now. */
-type Paint = 'plain' | 'branch' | 'study' | 'check' | 'open' | 'missed';
-type Score = { t: number; right: number; total: number };
+type Paint = 'needs' | 'plain' | 'branch' | 'study' | 'check' | 'open' | 'missed';
+type Score = { t: number; right: number; total: number; missed?: string[] };
+type ScoreStore = Record<string, Score[]>;
+const CHECKS = ['I gave the reason', 'My arrows go the right way', 'I explained every big word'];
+/** Days until the next redraw. Lower scores come back sooner. (A design choice, not from a study.) */
+function redrawGap(s: Score) {
+  const pct = s.total ? s.right / s.total : 0;
+  return pct < 0.6 ? 2 : pct <= 0.85 ? 7 : 21;
+}
+function dayName(t: number) {
+  const d = Math.round((t - Date.now()) / 86400000);
+  if (d <= 0) return 'today';
+  if (d === 1) return 'tomorrow';
+  if (d < 7) return new Date(t).toLocaleDateString(undefined, { weekday: 'short' });
+  return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
 const DAY = 24 * 60 * 60 * 1000;
 
 function colorOf(n: GNode) {
@@ -139,7 +154,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [addText, setAddText] = useState('');
   const [addBack, setAddBack] = useState('');
   const [paint, setPaint] = useState<Paint>('plain');
-  const studyOn = paint === 'study';
+  const studyOn = paint === 'study' || paint === 'needs';
   const [showStudy, setShowStudy] = useState(false);
   /** Redraw quiz: names are hidden until you recall them. */
   const [quiz, setQuiz] = useState(false);
@@ -152,7 +167,14 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   /** Text of the last redraw, ready to paste to an AI for grading. */
   const [gradeText, setGradeText] = useState('');
   const [copied, setCopied] = useState(false);
-  const [scores, setScores] = useState<Score[]>([]);
+  const [store, setStore] = useState<ScoreStore>({});
+  /** Where the redraw starts: the page, or one section of it. */
+  const [quizRoot, setQuizRoot] = useState<string | null>(null);
+  /** Self-check ticks per bubble in the redraw. */
+  const [checks, setChecks] = useState<Record<string, boolean[]>>({});
+  const [pageMade, setPageMade] = useState(0);
+  /** Sections that already have a redraw reminder card in your flashcard queue. */
+  const [queued, setQueued] = useState<Record<string, string>>({});
   const [study, setStudy] = useState<Map<string, Study>>(new Map());
   const [refresh, setRefresh] = useState(0);
   const [data, setData] = useState<GraphData | null>(null);
@@ -160,8 +182,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   // live values the drawing code reads without redrawing everything
-  const live = useRef({ hideAnswers, search, linkMode, linkFrom, paint, study, mode, centerId, quiz, got, missed });
-  live.current = { hideAnswers, search, linkMode, linkFrom, paint, study, mode, centerId, quiz, got, missed };
+  const live = useRef({ hideAnswers, search, linkMode, linkFrom, paint, study, mode, centerId, quiz, got, missed, quizRoot, needs: new Map<string, string>() });
+  live.current = { ...live.current, hideAnswers, search, linkMode, linkFrom, paint, study, mode, centerId, quiz, got, missed, quizRoot };
 
   /** In the redraw, bubbles only appear once you have recalled them, so nothing drawn is hidden. */
   const isHidden = (_n: GNode) => false;
@@ -169,10 +191,12 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const fillOf = (n: GNode) => {
     const c = live.current;
     if (c.quiz || c.paint === 'missed') {
-      if (c.got.has(n.id)) return c.quiz ? GOT : colorOf(n);
+      if (c.got.has(n.id)) return c.quiz ? GOT : PLAIN;
       if (c.missed.has(n.id)) return MISSED;
-      return c.quiz && !n.isCenter ? NOT_A_CARD : colorOf(n);
+      if (!c.quiz) return n.isCenter ? PLAIN_CENTER : PLAIN;
+      return n.id === c.quizRoot ? PLAIN_CENTER : NOT_A_CARD;
     }
+    if (c.paint === 'needs') return c.needs.has(n.id) ? MATCH : NOT_A_CARD;
     if (c.paint === 'study') {
       const s = c.study.get(n.id);
       return s ? STUDY[s][0] : NOT_A_CARD;
@@ -194,6 +218,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   // Redraw shortly after anything in the notes changes (waits for a pause in typing)
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const bump = () => {
+    // notes are not reloaded in the middle of a redraw, so the map does not jump
+    if (live.current.quiz) return;
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setRefresh((n) => n + 1), 1200);
   };
@@ -293,24 +319,36 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   // Redraw scores for this page (kept in your RemNote account)
   useEffect(() => {
     let cancelled = false;
-    setScores([]);
+    setStore({});
+    setPageMade(0);
     if (!centerId) return;
     plugin.storage
-      .getSynced<Record<string, Score[]>>('bm-redraw')
-      .then((all) => !cancelled && setScores((all && all[centerId]) || []))
+      .getSynced<ScoreStore>('bm-redraw')
+      .then((all) => !cancelled && setStore(all || {}))
+      .catch(() => {});
+    plugin.storage
+      .getSynced<Record<string, string>>('bm-redraw-cards')
+      .then((q) => !cancelled && setQueued(q || {}))
+      .catch(() => {});
+    plugin.rem
+      .findOne(centerId)
+      .then((r) => !cancelled && setPageMade(Number((r as any)?.createdAt) || 0))
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [centerId, plugin]);
 
-  const startQuiz = () => {
+  const startQuiz = (rootId?: string) => {
+    const root = rootId || centerId || null;
+    setQuizRoot(root);
+    setChecks({});
     setGot(new Set());
     setMissed(new Set());
     setAsked(new Set());
     setAnswers({});
     setGradeText('');
-    setSel(centerId || null);
+    setSel(root);
     setLinkMode(false);
     setShowStudy(false);
     setCollapsed(new Set());
@@ -334,10 +372,11 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   /** The question asked for a bubble in the redraw. It asks for the idea, not the bubble names. */
   const promptFor = (n: GNode): string => {
     if (n.label.trim().endsWith('?')) return `Answer it in your own words: ${n.label}`;
-    if (n.isCenter) return `Explain "${n.label}" from the top. What are the main parts, and why does each one matter?`;
+    if (n.isCenter)
+      return `Explain "${n.label}" to a first-year student, from the top. What are the main parts, and why does each one matter?`;
     const parent = n.parentId ? labelOf(n.parentId) : undefined;
     const under = parent && !parent.isCenter ? ` (under "${parent.label}")` : '';
-    return `Explain "${n.label}"${under}. What is it or what does it do, and why? What would go wrong without it?`;
+    return `Explain "${n.label}"${under} to a first-year student in 3 to 5 sentences. What does it do, and why? What would go wrong without it?`;
   };
   const buildGradeText = (): string => {
     const lines: string[] = [
@@ -353,6 +392,11 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       i++;
       lines.push(`${i}. QUESTION: ${promptFor(n)}`);
       lines.push(`MY ANSWER: ${(answers[id] || '').trim() || '(I said it out loud, nothing typed)'}`);
+      const ck = checks[id];
+      if (ck) {
+        const no = CHECKS.filter((_, j) => !ck[j]);
+        if (no.length) lines.push(`MY OWN CHECK, NOT SURE ABOUT: ${no.join('; ')}`);
+      }
       lines.push('MY NOTES:');
       for (const k of tree.kids.get(id) || []) {
         const kn = labelOf(k);
@@ -383,31 +427,59 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   };
 
   const finishQuiz = async () => {
-    const total = tree.all.size;
     if (asked.size) {
       setGradeText(buildGradeText());
       setCopied(false);
     }
-    const right = got.size;
+    // only the points you opened count. Parts you never reached are listed, not marked wrong.
+    const reached = new Set<string>();
+    for (const id of asked) for (const k of tree.kids.get(id) || []) reached.add(k);
+    let unopened = 0;
+    for (const id of reached) if (tree.kids.get(id)?.length && !asked.has(id)) unopened++;
+    const total = reached.size;
+    const right = [...reached].filter((id) => got.has(id)).length;
+    const miss = new Set([...reached].filter((id) => !got.has(id)));
+    const root = quizRoot || centerId;
     setQuiz(false);
     setSel(null);
-    // anything you did not get to counts as missed, like a blank spot on a redraw
-    const all = new Set(missed);
-    for (const id of tree.all) if (!got.has(id)) all.add(id);
-    setMissed(all);
-    setPaint(all.size ? 'missed' : 'plain');
+    setMissed(miss);
+    setPaint(miss.size ? 'missed' : 'plain');
+    if (!total) return flash('Redraw stopped. Nothing was opened, so there is no score.');
     flash(
-      `Redraw score: ${right} of ${total} (${total ? Math.round((100 * right) / total) : 0}%).` +
-        (all.size ? ' Orange bubbles are the ones to fix.' : ' Nothing missed.')
+      `Score: ${right} of ${total} points you reached (${Math.round((100 * right) / total)}%).` +
+        (unopened ? ` Not reached: ${unopened} ${unopened === 1 ? 'section' : 'sections'}.` : '') +
+        (miss.size ? ' Orange bubbles are the ones to fix.' : ' Nothing missed.')
     );
-    if (!centerId || !total) return;
-    const next = [...scores, { t: Date.now(), right, total }].slice(-20);
-    setScores(next);
+    if (!root) return;
+    const entry: Score = { t: Date.now(), right, total, missed: [...miss].slice(0, 60) };
+    const next = [...(store[root] || []), entry].slice(-20);
+    setStore((st) => ({ ...st, [root]: next }));
     try {
-      const store = (await plugin.storage.getSynced<Record<string, Score[]>>('bm-redraw')) || {};
-      await plugin.storage.setSynced('bm-redraw', { ...store, [centerId]: next });
+      const all = (await plugin.storage.getSynced<ScoreStore>('bm-redraw')) || {};
+      await plugin.storage.setSynced('bm-redraw', { ...all, [root]: next });
     } catch {
       // the score still shows for this session
+    }
+  };
+
+  /** Let RemNote's own scheduler bring the redraw back: one flashcard that says "redraw this". */
+  const queueRedraw = async (rootId: string) => {
+    const n = labelOf(rootId);
+    if (!n) return;
+    try {
+      const id = await addChild(
+        plugin,
+        rootId,
+        `${REDRAW_CARD} ${n.label}`,
+        'Open Bubble Map, click this bubble, press Redraw from here. Explain each part before you look.'
+      );
+      const next = { ...queued, [rootId]: id };
+      setQueued(next);
+      const all = (await plugin.storage.getSynced<Record<string, string>>('bm-redraw-cards')) || {};
+      await plugin.storage.setSynced('bm-redraw-cards', { ...all, [rootId]: id });
+      flash('Added one card to your flashcard queue. RemNote will bring this redraw back on its own schedule.');
+    } catch (e: any) {
+      flash(`Could not add the card: ${String(e?.message || e)}`);
     }
   };
 
@@ -570,7 +642,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     if (!data) return null;
     if (quiz) {
       // redraw: only the topic and the branches you have revealed so far are drawn
-      const seen = new Set<string>(centerId ? [centerId] : []);
+      const start = quizRoot || centerId;
+      const seen = new Set<string>(start ? [start] : []);
       for (const id of asked) for (const k of tree.kids.get(id) || []) seen.add(k);
       const links = data.links.filter((l) => seen.has(l.source as string) && seen.has(l.target as string));
       const degree = new Map<string, number>();
@@ -644,7 +717,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       )
       .map((n) => ({ ...n, degree: degree.get(n.id) || 0, folded: foldCount.get(n.id) }));
     return { nodes, links, truncated: data.truncated };
-  }, [data, kinds, cardsOnly, collapsed, quiz, asked, tree, centerId]);
+  }, [data, kinds, cardsOnly, collapsed, quiz, asked, tree, centerId, quizRoot]);
 
   // 2) Draw them (bubbles push apart, lines pull together)
   useEffect(() => {
@@ -710,6 +783,12 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       .attr('class', 'gv-node')
       .style('cursor', 'pointer');
 
+    // an unseen, larger tap area, so small bubbles are easy to hit with a finger
+    nodeSel
+      .append('ellipse')
+      .attr('rx', (n) => radius(n) + 9)
+      .attr('ry', (n) => radius(n) + 9)
+      .attr('fill', 'transparent');
     nodeSel
       .append('circle')
       .attr('r', radius)
@@ -980,7 +1059,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     if (!svgEl) return;
     const q = search.trim().toLowerCase();
     const hit = (n: GNode) => !!q && n.label.toLowerCase().includes(q);
-    const plain = paint === 'plain' && !quiz;
+    const plain = (paint === 'plain' || paint === 'missed' || paint === 'needs') && !quiz;
     select(svgEl)
       .selectAll<SVGPathElement, GLink>('path.gv-link')
       .attr('stroke', (l) => {
@@ -1030,14 +1109,34 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const cards = (view?.nodes || []).filter((n) => cardKind(n));
   const whyCount = cards.filter((n) => cardKind(n) === 'why').length;
   const openQs = (data?.nodes || []).filter((n) => n.label.includes('??'));
-  const lastScore = scores[scores.length - 1];
-  const daysAgo = lastScore ? Math.floor((Date.now() - lastScore.t) / DAY) : null;
+  // redraw history for this page and its sections, with when each is due again
+  const onPage = (id: string) => id === centerId || tree.all.has(id);
+  const sections = Object.keys(store)
+    .filter((id) => onPage(id) && store[id]?.length)
+    .map((id) => {
+      const last = store[id][store[id].length - 1];
+      return { id, last, due: last.t + redrawGap(last) * DAY };
+    })
+    .sort((a, b) => a.due - b.due);
+  const firstDue = centerId && !sections.length && pageMade ? pageMade + 7 * DAY : 0;
+  const dueNow = sections.filter((x) => x.due <= Date.now());
+  const anyDue = dueNow.length > 0 || (firstDue > 0 && firstDue <= Date.now());
+  // what needs work: missed in the last redraw, a card you keep missing, or an open ??
+  const needs = new Map<string, string>();
+  for (const n of data?.nodes || []) if (n.label.includes('??')) needs.set(n.id, 'has ??');
+  for (const [id, st] of study) if (st === 'weak') needs.set(id, 'card missed last time');
+  for (const x of sections)
+    for (const id of x.last.missed || [])
+      if (labelOf(id)) needs.set(id, `missed in redraw ${new Date(x.last.t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`);
+  live.current.needs = needs;
+  const rootNode = quizRoot ? labelOf(quizRoot) : undefined;
+  const reachedCount = [...asked].reduce((sum, id) => sum + (tree.kids.get(id)?.length || 0), 0);
   const anyCloze = !!data?.nodes.some((n) => n.hasCloze);
   const anyCard = !!data?.nodes.some((n) => n.isCard);
   const status = note
     ? note
     : quiz
-    ? `Redraw: ${got.size} right, ${missed.size} missed, ${tree.all.size - got.size - missed.size} to go. Click a bubble marked ?, answer its question, then check your notes.`
+    ? `Redraw${rootNode && !rootNode.isCenter ? ` of "${short(rootNode.label, 24)}"` : ''}: ${got.size} right, ${missed.size} missed, ${Math.max(reachedCount - got.size - missed.size, 0)} to mark. Click a bubble marked ? to go deeper.`
     : linkMode
     ? linkFrom
       ? `Now click the bubble to link "${short(linkFrom.label, 24)}" to.`
@@ -1138,10 +1237,11 @@ export function GraphView({ centerId, height, onOpened }: Props) {
         ) : (
           <button
             style={btn(showStudy || (paint !== 'branch' && paint !== 'plain'))}
+            
             onClick={() => setShowStudy((v) => !v)}
             title="Redraw quiz, card check, open questions, study colors"
           >
-            Study
+            Study{anyDue ? ' •' : ''}
           </button>
         )}
         {collapsed.size > 0 && (
@@ -1214,6 +1314,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           ? [[MATCH, 'has a ??']]
           : paint === 'missed'
           ? [[MISSED, 'missed on your last redraw']]
+          : paint === 'needs'
+          ? [[MATCH, 'needs work']]
           : []
         ).map(([color, text]) => (
           <span key={text} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1233,16 +1335,23 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             </button>
           </div>
           {quizKids.length === 0 ? (
-            <div style={{ marginTop: 4, ...DIM }}>Nothing goes under this one. Pick a bubble marked ?.</div>
+            <div style={{ marginTop: 4, ...DIM }}>
+              {selNode.id === quizRoot
+                ? 'Nothing to redraw here. Finish, then pick a bubble with notes under it.'
+                : 'Nothing goes under this one. Pick a bubble marked ?.'}
+            </div>
           ) : !asked.has(selNode.id) ? (
             <>
               <div style={{ marginTop: 4 }}>
                 {promptFor(selNode)}
               </div>
               <div style={{ marginTop: 4, ...DIM }}>
-                Your notes have {quizKids.length === 1 ? '1 point' : `${quizKids.length} points`} here. Type it the way
-                you would explain it to a classmate: "I think ... because ...".
+                Your notes have {quizKids.length === 1 ? '1 point' : `${quizKids.length} points`} here. No notes, and
+                no big words without saying what they mean.
               </div>
+              {quizKids.length > 30 && (
+                <div style={{ marginTop: 4, color: MISSED }}>This is a big one. A smaller section is easier to redraw well.</div>
+              )}
               <textarea
                 style={{ ...FIELD, borderRadius: 8, fontSize: 12, width: '100%', marginTop: 6, minHeight: 64, resize: 'vertical', boxSizing: 'border-box' }}
                 placeholder="Your answer, in your own words"
@@ -1287,7 +1396,34 @@ export function GraphView({ centerId, height, onOpened }: Props) {
                   </button>
                 </div>
               ))}
-              <div style={{ marginTop: 8, ...DIM }}>Then click the next bubble marked ? on the map.</div>
+              {quizKids.length > 2 && (
+                <button
+                  style={{ ...btn(false), marginTop: 6, padding: '2px 8px' }}
+                  onClick={() => quizKids.forEach((k) => mark(k.id, true))}
+                  title="Mark every point as Got it, then change the ones you missed"
+                >
+                  Got all of them
+                </button>
+              )}
+              <div style={{ marginTop: 4, ...DIM }}>Points you leave unmarked count as missed.</div>
+              <div style={{ marginTop: 8, ...DIM }}>Check yourself:</div>
+              {CHECKS.map((text, j) => (
+                <label key={text} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 3, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={!!checks[selNode.id]?.[j]}
+                    onChange={(e) =>
+                      setChecks((c) => {
+                        const row = [...(c[selNode.id] || [false, false, false])];
+                        row[j] = e.target.checked;
+                        return { ...c, [selNode.id]: row };
+                      })
+                    }
+                  />
+                  {text}
+                </label>
+              ))}
+              <div style={{ marginTop: 8, ...DIM }}>Then click the next bubble marked ? on the map, or Finish redraw.</div>
             </>
           )}
         </div>
@@ -1429,6 +1565,15 @@ export function GraphView({ centerId, height, onOpened }: Props) {
                 {collapsed.has(selNode.id) ? 'Unfold' : 'Fold'}
               </button>
             )}
+            {mode === 'local' && (tree.kids.get(selNode.id)?.length || 0) > 0 && (
+              <button
+                style={btn(false)}
+                onClick={() => startQuiz(selNode.id)}
+                title="Explain just this section from memory, then check it against your notes"
+              >
+                Redraw from here
+              </button>
+            )}
           </div>
           {adding === 'bubble' && (
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
@@ -1515,24 +1660,78 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           <div style={{ marginTop: 8 }}>
             <b>Redraw from memory</b>
             <div style={DIM}>
-              The map empties to just the topic. It asks what goes under each bubble, you say it, then it
-              shows the branches and you mark what you had. This is the step that shows what you really know.
+              The map empties to just the topic. You explain each part from memory, then check it against
+              your notes. Only the parts you open are scored. This is the step that shows what you really know.
             </div>
-            {lastScore && (
-              <div style={{ marginTop: 2 }}>
-                Last time: {lastScore.right} of {lastScore.total} (
-                {Math.round((100 * lastScore.right) / lastScore.total)}%),{' '}
-                {daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo} days ago`}.
-                {daysAgo! >= 7 && <span style={{ color: MISSED }}> Time to redraw.</span>}
+            {sections.map((x) => (
+              <div key={x.id} style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ flex: 1 }}>
+                  {x.id === centerId ? 'Whole page' : short(labelOf(x.id)?.label || '', 28)}: {x.last.right} of{' '}
+                  {x.last.total} ({Math.round((100 * x.last.right) / x.last.total)}%).{' '}
+                  {x.due <= Date.now() ? (
+                    <span style={{ color: MISSED }}>Redraw due.</span>
+                  ) : (
+                    <span style={DIM}>Next: {dayName(x.due)}</span>
+                  )}
+                </span>
+                <button style={{ ...btn(x.due <= Date.now()), padding: '2px 8px' }} onClick={() => startQuiz(x.id)}>
+                  Redraw
+                </button>
+                {!queued[x.id] && (
+                  <button
+                    style={{ ...btn(false), padding: '2px 8px' }}
+                    onClick={() => queueRedraw(x.id)}
+                    title="Adds one flashcard that says to redraw this. RemNote then spaces it out like any other card."
+                  >
+                    + Queue
+                  </button>
+                )}
+              </div>
+            ))}
+            {firstDue > 0 && (
+              <div style={{ marginTop: 3 }}>
+                {firstDue <= Date.now() ? (
+                  <span style={{ color: MISSED }}>First redraw is due.</span>
+                ) : (
+                  <span style={DIM}>First redraw: {dayName(firstDue)}</span>
+                )}
               </div>
             )}
             <button
               style={{ ...btn(true), marginTop: 6 }}
               disabled={mode !== 'local' || !view || view.nodes.length < 2}
-              onClick={startQuiz}
+              onClick={() => startQuiz()}
             >
-              Start redraw
+              Start redraw (whole page)
             </button>
+            <div style={{ marginTop: 3, ...DIM }}>
+              For one section, click its bubble and press Redraw from here. "+ Queue" adds one reminder card, so
+              RemNote's flashcard schedule brings the redraw back for you.
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <b>Needs work</b>
+            {needs.size === 0 ? (
+              <div style={DIM}>Nothing flagged. Misses from a redraw, cards you miss and ?? bullets show here.</div>
+            ) : (
+              <>
+                <ul style={{ margin: '2px 0 0', paddingLeft: 16 }}>
+                  {[...needs].slice(0, 5).map(([id, why]) => (
+                    <li key={id} style={{ cursor: 'pointer' }} onClick={() => setSel(id)}>
+                      {short(labelOf(id)?.label || '', 44)} <span style={DIM}>({why})</span>
+                    </li>
+                  ))}
+                </ul>
+                {needs.size > 5 && <div style={DIM}>and {needs.size - 5} more</div>}
+                <button
+                  style={{ ...btn(paint === 'needs'), marginTop: 6 }}
+                  onClick={() => setPaint(paint === 'needs' ? 'plain' : 'needs')}
+                >
+                  Show on map
+                </button>
+              </>
+            )}
           </div>
 
           <div style={{ marginTop: 12 }}>
@@ -1642,7 +1841,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <li>"Link bubbles" or "Link to…": pick two bubbles to add a [[link]]. "Unlink" on a card removes one.</li>
             <li>"Fold" tucks a branch away. The bubble shows how many are inside.</li>
             <li>"Study" opens the study tools: the redraw quiz, the card check, your ?? list and card colors.</li>
-            <li>Redraw: the map empties to just the topic. Each bubble asks you a question. Type your answer in your own words, show your notes, and mark what you had. At the end, Copy for grading gives you text to paste to an AI. Do it a week after you make a map.</li>
+            <li>Redraw: the map empties to just the topic. Each bubble asks you a question. Type your answer in your own words, show your notes, and mark what you had. At the end, Copy for grading gives you text to paste to an AI. Do it a week after you make a map. For one section, click its bubble and press Redraw from here. Only what you open is scored, and the Study panel shows when each redraw is due again.</li>
             <li>"Add card" makes a flashcard under a bubble. "Questions" adds the fixed why questions to answer.</li>
             <li>The map remembers how you arranged each page.</li>
             <li>"Save picture" saves the map you see as an image.</li>

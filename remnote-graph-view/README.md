@@ -27,6 +27,9 @@ See your notes as a map of bubbles and branches, like a hand-drawn mind map.
 Press **Study** on the map.
 
 - **Redraw from memory.** The map empties to just the topic. Each bubble asks you a question about the idea (what it does, why, what goes wrong without it). You type your answer in your own words, show your notes, and mark each point Got it or Missed. Then you go a level down. You get a score, missed bubbles turn orange, and the score is saved per page so the map can remind you to redraw after a week. At the end, **Copy for grading** gives you your answers next to your notes, ready to paste to an AI for marking. Explaining from memory is retrieval practice, which is one of the best-supported study methods.
+- **Redraw from here.** Click any bubble and redraw just that section. Only the points you open are scored, and parts you did not reach are listed, not marked wrong. After your notes show, three self-check boxes ask if you gave the reason, got the direction right, and explained every big word.
+- **Redraw again later.** The Study panel shows when each section is due again. "+ Queue" adds one reminder flashcard, so RemNote's own schedule brings the redraw back, on any device.
+- **Needs work.** One list and one color mode for bubbles missed in a redraw, cards you missed, and bullets with `??`.
 - **Card check.** Counts the flashcards on the map and guesses which ask for a reason and which only ask for a name (answers of one or two words). Aim for at least half reason cards, and 10 to 15 cards per lecture.
 - **Open questions.** Any bullet with `??` in it is listed, so you can take the list to office hours.
 - **Add card / Questions.** From a bubble's card, add a why or what-if flashcard, or add a fixed set of questions for a thing, a process or a calculation.

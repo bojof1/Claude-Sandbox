@@ -41,3 +41,38 @@ export const QUESTION_SETS: Record<string, string[]> = {
     'Does the answer make sense?',
   ],
 };
+
+/** Make a flashcard (front and back) under a parent Rem. Returns its id. */
+export async function addCard(plugin: RNPlugin, parentId: string, front: string, back: string) {
+  const rem = (await plugin.rem.createRem()) as any;
+  if (!rem) throw new Error('RemNote did not create the Rem');
+  await rem.setText([front]);
+  await rem.setBackText([back]);
+  await rem.setParent(parentId);
+  try {
+    await rem.setPracticeDirection('forward');
+  } catch {
+    // older RemNote: the card still exists
+  }
+  return rem._id as string;
+}
+
+/** Copy text for pasting somewhere else. Returns false if the browser would not allow it. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const el = document.createElement('textarea');
+      el.value = text;
+      document.body.appendChild(el);
+      el.select();
+      const ok = document.execCommand('copy');
+      el.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
