@@ -32,6 +32,16 @@ Press **Study** on the map.
 - **Add card / Questions.** From a bubble's card, add a why or what-if flashcard, or add a fixed set of questions for a thing, a process or a calculation.
 - **Card progress colors**, **fold**, **save picture**, and the map remembers how you arranged each page.
 
+## Why Loop tab
+
+The sidebar has a second tab, **Why Loop**, for the parts of a study loop that are not the map:
+
+- **Lectures.** Start a lecture and tick off the steps: sort, questions, pretest, map (with a 20 minute timer), cards, quick test, miss log.
+- **Miss log.** Log wrong reasoning with the right reason. Each miss comes back for a re-test one week later.
+- **Weekly.** Shows which maps are due for a redraw, how many misses are due, and saves your weekly number (first-try accuracy on a mixed question set) per course with a small trend chart.
+
+Everything is saved to your RemNote account, so it syncs between devices.
+
 ## Load it on your Mac (local dev plugin)
 
 You need [Node.js](https://nodejs.org) (the LTS version) installed once.
