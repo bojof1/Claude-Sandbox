@@ -30,13 +30,20 @@ The pieces come from learning research: practice testing and spacing have the st
 
 Everything is saved to your RemNote account, so it syncs between devices. It pairs well with the Bubble Map plugin but does not need it.
 
-## Development
+## Build it yourself
+
+You need [Node.js](https://nodejs.org) LTS (the version is in `.nvmrc`).
 
 ```
-npm install
-npm run dev   # serves on http://localhost:8081
-npm run build # makes PluginZip.zip
+cd why-loop-plugin
+npm ci          # installs the exact versions in package-lock.json
+npm run build   # webpack build into dist/, zipped to PluginZip.zip
+npm run dev     # optional: live dev server on http://localhost:8081
 ```
+
+- The manifest is `public/manifest.json` (id `bolurin_why_loop`, version 1.1.0).
+- Source code is in `src/`: `src/widgets/` holds the RemNote widgets, `src/lib/` holds the logic (`WhyLoop.tsx`, `rem.ts`).
+- `PluginZip.zip` is exactly what gets uploaded to the RemNote marketplace.
 
 ## New in 1.1
 

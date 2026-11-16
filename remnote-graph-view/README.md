@@ -50,6 +50,35 @@ You need [Node.js](https://nodejs.org) (the LTS version) installed once.
 
 The plugin stays loaded while `npm run dev` is running. Next time, just do steps 2 and 4.
 
+## Build it yourself
+
+You need [Node.js](https://nodejs.org) LTS (the version is in `.nvmrc`).
+
+```
+cd remnote-graph-view
+npm ci            # installs the exact versions in package-lock.json
+npm run build     # webpack build into dist/, zipped to PluginZip.zip
+npm run dev       # optional: live dev server on http://localhost:8080
+```
+
+- The manifest is `public/manifest.json` (id `bolurin_graph_view`, version 1.1.0). It is copied into `dist/` by the build.
+- Source code is in `src/`: `src/widgets/` holds the RemNote widgets (sidebar, pop-up, commands), `src/lib/` holds the map and study logic (`GraphView.tsx`, `graphData.ts`).
+- `PluginZip.zip` is exactly what gets uploaded to the RemNote marketplace.
+
+## How this differs from RemNote's Knowledge Graph
+
+RemNote Pro has a Knowledge Graph (global graph from the Omnibar, local graph with `/view graph`). Based on RemNote's help article, Bubble Map is different in these ways:
+
+- **Works on the free plan.** The Knowledge Graph is a Pro feature. Bubble Map does not need Pro.
+- **Lives in the right sidebar and follows you.** It redraws around whatever page you have open, so the map is always next to the note you are reading. Cmd/Ctrl+G opens a large pop-up view.
+- **Editing from the map.** You can add a bubble, add a flashcard, add a set of question prompts, and link or unlink two bubbles right from the map. The Knowledge Graph is for viewing.
+- **Study tools built on the map.** "Redraw from memory" hides the bubble names and asks you to explain each part in your own words, with self-checks and a score per section. "+ Queue" makes a normal RemNote flashcard so RemNote's own spaced-repetition scheduler brings the redraw back (Bubble Map does not run a second scheduler). There is also a card check (does each card ask for a reason, not just a name), a "Needs work" list, and a list of open `??` questions.
+- **Card progress on the map.** Bubbles can be colored by how well their flashcards are going, so weak spots stand out.
+- **Cleaner layout for study notes.** Bullets that only hold a link fold into one bubble, and helper Rems (query and redraw cards) are hidden.
+- **Save picture.** Export the current map as an image.
+
+Bubble Map does not replace the Knowledge Graph's whole-database view; it is a study tool for one topic at a time.
+
 ## Settings
 
 In RemNote, **Settings > Plugin Settings > Bubble Map**: turn outline lines, link lines or tag lines on or off, and set the most bubbles to draw (lower is faster).
