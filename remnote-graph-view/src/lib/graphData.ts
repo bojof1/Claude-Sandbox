@@ -14,6 +14,8 @@ export interface GNode {
   isCard: boolean;
   /** The answer side of a front-and-back card ('' when there is none). */
   back: string;
+  /** What a card asks you to recall: the cloze blanks, or the back side. */
+  answer: string;
   /** The bubble this one sits under in the outline. */
   parentId: string | null;
   /** Rems this one points at with a [[link]] in its own text. */
@@ -133,9 +135,16 @@ function labelsOf(rem: RemLike, names?: Map<string, string>) {
   const rt = richTextToLabel(rem.text, names) ? rem.text : rem.backText;
   // RemNote keeps hidden helper Rems (saved searches) that start with "query:"; leave them out
   if (richTextToLabel(rt, names).startsWith('query:'))
-    return { label: '', hiddenLabel: '', back: '', hasCloze: false, isCard: false };
+    return { label: '', hiddenLabel: '', back: '', answer: '', hasCloze: false, isCard: false };
+  const back = rt === rem.text ? richTextToLabel(rem.backText, names) : '';
+  const blanks = [...((rem.text as any[]) || []), ...((rem.backText as any[]) || [])]
+    .filter((el) => el && typeof el === 'object' && el.cId)
+    .map((el) => (el.i === 'q' ? names?.get(el._id) ?? '' : el.text ?? ''))
+    .join(' ')
+    .trim();
   return {
-    back: rt === rem.text ? richTextToLabel(rem.backText, names) : '',
+    back,
+    answer: blanks || back,
     label: richTextToLabel(rt, names),
     hiddenLabel: richTextToLabel(rt, names, true),
     hasCloze: hasCloze(rt),
@@ -167,6 +176,7 @@ class Builder {
       hasCloze: l.hasCloze,
       isCard: l.isCard,
       back: l.back,
+      answer: l.answer,
       parentId: rem.parent,
       refs: [...new Set([...referencedIds(rem.text), ...referencedIds(rem.backText)])],
       mentions: [],
@@ -421,13 +431,57 @@ export async function removeReference(plugin: RNPlugin, fromId: string, toId: st
 }
 
 /** Make a new Rem with this text under a parent Rem. Returns its id. */
-export async function addChild(plugin: RNPlugin, parentId: string, text: string) {
+export async function addChild(plugin: RNPlugin, parentId: string, text: string, back?: string) {
   const rem = (await plugin.rem.createRem()) as any;
   if (!rem) throw new Error('RemNote did not create the Rem');
   await rem.setText([text]);
   await rem.setParent(parentId);
+  if (back) {
+    // a front and a back make it a flashcard
+    await rem.setBackText([back]);
+    try {
+      await rem.setPracticeDirection('forward');
+    } catch {
+      // older RemNote: the card still exists with its default direction
+    }
+  }
   return rem._id as string;
 }
+
+/**
+ * Is a flashcard asking for a reason, or just a name?
+ * A rough guess: an answer of three or more words, or one with a "because" word in it,
+ * is treated as a reason. One or two words is treated as a name.
+ */
+export function cardKind(n: GNode): 'why' | 'name' | null {
+  if (!n.isCard) return null;
+  const a = n.answer.trim();
+  if (!a) return null;
+  if (/\b(because|so that|therefore|which means|leads? to|causes?|results? in)\b/i.test(a)) return 'why';
+  return a.split(/\s+/).length >= 3 ? 'why' : 'name';
+}
+
+/** The fixed question sets: pick by the shape of the topic. */
+export const QUESTION_SETS: Record<string, string[]> = {
+  Thing: [
+    'What turns it on, and why?',
+    'Where is it, and why there?',
+    'What happens next?',
+    'What if it breaks?',
+  ],
+  Process: [
+    'What starts it?',
+    'What are the steps, in order?',
+    'What sets the rate (the limiting step)?',
+    'What breaks the chain?',
+  ],
+  Calculation: [
+    "What's given?",
+    "What's asked?",
+    'Which equation, and why that one?',
+    'Does the answer make sense?',
+  ],
+};
 
 export type Study = 'new' | 'due' | 'weak' | 'strong';
 

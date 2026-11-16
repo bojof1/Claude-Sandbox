@@ -22,6 +22,16 @@ See your notes as a map of bubbles and branches, like a hand-drawn mind map.
 - Open the right sidebar and click the bubble icon. The map follows the page you are on.
 - Or press **Cmd + Shift + G**, or type `/Open Bubble Map`, for a big pop-up map.
 
+## Study tools (1.0)
+
+Press **Study** on the map.
+
+- **Redraw from memory.** The names hide. Click a bubble, say what it is (with the reason), press Reveal, then mark Got it or Missed it. You get a score, missed bubbles turn orange, and the score is saved per page so the map can remind you to redraw after a week. Recalling a map from memory is retrieval practice, which is one of the best-supported study methods.
+- **Card check.** Counts the flashcards on the map and guesses which ask for a reason and which only ask for a name (answers of one or two words). Aim for at least half reason cards, and 10 to 15 cards per lecture.
+- **Open questions.** Any bullet with `??` in it is listed, so you can take the list to office hours.
+- **Add card / Questions.** From a bubble's card, add a why or what-if flashcard, or add a fixed set of questions for a thing, a process or a calculation.
+- **Card progress colors**, **fold**, **save picture**, and the map remembers how you arranged each page.
+
 ## Load it on your Mac (local dev plugin)
 
 You need [Node.js](https://nodejs.org) (the LTS version) installed once.

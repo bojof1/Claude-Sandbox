@@ -15,6 +15,8 @@ import { drag } from 'd3-drag';
 import {
   addChild,
   addReference,
+  cardKind,
+  QUESTION_SETS,
   loadGlobalGraph,
   loadLocalGraph,
   loadStudy,
@@ -42,6 +44,12 @@ const STUDY: Record<Study, [string, string]> = {
   strong: ['#36B37E', 'going well'],
 };
 const NOT_A_CARD = '#59616E';
+const GOT = '#36B37E';
+const MISSED = '#F2994A';
+/** What the bubble colors mean right now. */
+type Paint = 'branch' | 'study' | 'check' | 'open' | 'missed';
+type Score = { t: number; right: number; total: number };
+const DAY = 24 * 60 * 60 * 1000;
 
 function colorOf(n: GNode) {
   if (n.isCenter) return BRANCH[0];
@@ -57,6 +65,32 @@ function radius(n: GNode) {
 function short(s: string, max = LABEL_MAX) {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
+
+const PANEL: React.CSSProperties = {
+  position: 'absolute',
+  left: 8,
+  bottom: 34,
+  width: 330,
+  maxWidth: 'calc(100% - 16px)',
+  maxHeight: '60%',
+  overflowY: 'auto',
+  padding: 10,
+  borderRadius: 10,
+  background: '#1f2430',
+  color: '#e8ebf0',
+  boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+  lineHeight: 1.45,
+};
+const FIELD: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  padding: '5px 10px',
+  borderRadius: 999,
+  border: '1px solid rgba(138,147,163,0.6)',
+  background: 'transparent',
+  color: 'inherit',
+};
+const DIM: React.CSSProperties = { opacity: 0.6 };
 
 interface Props {
   /** The Rem the "This page" map is built around. */
@@ -79,6 +113,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const posRef = useRef(new Map<string, { x: number; y: number }>());
   const tfRef = useRef<ZoomTransform>(zoomIdentity);
   const drawnKeyRef = useRef('');
+  /** The layout you left this page in last time. */
+  const savedRef = useRef<{ key: string; pos: Record<string, [number, number]> } | null>(null);
 
   const [mode, setMode] = useState<Mode>('local');
   const [depth, setDepth] = useState(1);
@@ -95,9 +131,18 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [sel, setSel] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<false | 'bubble' | 'card' | 'set'>(false);
   const [addText, setAddText] = useState('');
-  const [studyOn, setStudyOn] = useState(false);
+  const [addBack, setAddBack] = useState('');
+  const [paint, setPaint] = useState<Paint>('branch');
+  const studyOn = paint === 'study';
+  const [showStudy, setShowStudy] = useState(false);
+  /** Redraw quiz: names are hidden until you recall them. */
+  const [quiz, setQuiz] = useState(false);
+  const [got, setGot] = useState<Set<string>>(new Set());
+  const [missed, setMissed] = useState<Set<string>>(new Set());
+  const [shown, setShown] = useState<string | null>(null);
+  const [scores, setScores] = useState<Score[]>([]);
   const [study, setStudy] = useState<Map<string, Study>>(new Map());
   const [refresh, setRefresh] = useState(0);
   const [data, setData] = useState<GraphData | null>(null);
@@ -105,14 +150,32 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   // live values the drawing code reads without redrawing everything
-  const live = useRef({ hideAnswers, search, linkMode, linkFrom, studyOn, study, mode, centerId });
-  live.current = { hideAnswers, search, linkMode, linkFrom, studyOn, study, mode, centerId };
+  const live = useRef({ hideAnswers, search, linkMode, linkFrom, paint, study, mode, centerId, quiz, got, missed });
+  live.current = { hideAnswers, search, linkMode, linkFrom, paint, study, mode, centerId, quiz, got, missed };
+
+  /** In the redraw quiz, a bubble's name stays hidden until you have checked it. */
+  const isHidden = (n: GNode) => {
+    const c = live.current;
+    return c.quiz && !n.isCenter && !c.got.has(n.id) && !c.missed.has(n.id);
+  };
 
   const fillOf = (n: GNode) => {
-    const { studyOn: on, study: st } = live.current;
-    if (!on) return colorOf(n);
-    const s = st.get(n.id);
-    return s ? STUDY[s][0] : NOT_A_CARD;
+    const c = live.current;
+    if (c.quiz || c.paint === 'missed') {
+      if (c.got.has(n.id)) return c.quiz ? GOT : colorOf(n);
+      if (c.missed.has(n.id)) return MISSED;
+      return c.quiz && !n.isCenter ? NOT_A_CARD : colorOf(n);
+    }
+    if (c.paint === 'study') {
+      const s = c.study.get(n.id);
+      return s ? STUDY[s][0] : NOT_A_CARD;
+    }
+    if (c.paint === 'check') {
+      const k = cardKind(n);
+      return k === 'why' ? GOT : k === 'name' ? MISSED : NOT_A_CARD;
+    }
+    if (c.paint === 'open') return n.label.includes('??') ? MATCH : NOT_A_CARD;
+    return colorOf(n);
   };
 
   const showTree = useTrackerPlugin((rp) => rp.settings.getSetting<boolean>('show-tree')) ?? true;
@@ -149,6 +212,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       setSel(n.id);
       setReveal(false);
       setAdding(false);
+      setShown(null);
       return;
     }
     if (!from) return setLinkFrom({ id: n.id, label: n.label });
@@ -175,8 +239,9 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const onEmpty = () => {
     const { mode: m, centerId: c } = live.current;
     if (m !== 'local' || !c) return flash('Switch to "This page" to add bubbles.');
+    if (live.current.quiz) return;
     setSel(c);
-    setAdding(true);
+    setAdding('bubble');
     setAddText('');
   };
   const onEmptyRef = useRef(onEmpty);
@@ -186,10 +251,13 @@ export function GraphView({ centerId, height, onOpened }: Props) {
 
   const submitAdd = async () => {
     const text = addText.trim();
+    const back = adding === 'card' ? addBack.trim() : '';
     if (!text || !sel) return;
+    if (adding === 'card' && !back) return flash('A card needs an answer too.');
     setAddText('');
+    setAddBack('');
     try {
-      await addChild(plugin, sel, text);
+      await addChild(plugin, sel, text, back || undefined);
       setCollapsed((c) => {
         const next = new Set(c);
         next.delete(sel);
@@ -199,6 +267,79 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       setRefresh((r) => r + 1);
     } catch (e: any) {
       flash(`Could not add it: ${String(e?.message || e)}`);
+    }
+  };
+
+  /** Add one of the fixed question sets under a bubble, as plain bullets to answer. */
+  const addSet = async (name: string) => {
+    if (!sel) return;
+    setAdding(false);
+    try {
+      for (const q of QUESTION_SETS[name]) await addChild(plugin, sel, q);
+      flash(`Added the ${name.toLowerCase()} questions.`);
+      setRefresh((r) => r + 1);
+    } catch (e: any) {
+      flash(`Could not add them: ${String(e?.message || e)}`);
+    }
+  };
+
+  // Redraw scores for this page (kept in your RemNote account)
+  useEffect(() => {
+    let cancelled = false;
+    setScores([]);
+    if (!centerId) return;
+    plugin.storage
+      .getSynced<Record<string, Score[]>>('bm-redraw')
+      .then((all) => !cancelled && setScores((all && all[centerId]) || []))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [centerId, plugin]);
+
+  const startQuiz = () => {
+    setGot(new Set());
+    setMissed(new Set());
+    setShown(null);
+    setSel(null);
+    setLinkMode(false);
+    setShowStudy(false);
+    setCollapsed(new Set());
+    setCardsOnly(false);
+    setPaint('branch');
+    setQuiz(true);
+  };
+
+  const mark = (id: string, right: boolean) => {
+    const add = (set: Set<string>) => new Set(set).add(id);
+    if (right) setGot(add);
+    else setMissed(add);
+    setShown(null);
+    setSel(null);
+  };
+
+  const finishQuiz = async () => {
+    const total = (view?.nodes.length || 1) - 1;
+    const right = got.size;
+    setQuiz(false);
+    setSel(null);
+    // anything you did not get to counts as missed, like a blank spot on a redraw
+    const all = new Set(missed);
+    for (const n of view?.nodes || []) if (!n.isCenter && !got.has(n.id)) all.add(n.id);
+    setMissed(all);
+    setPaint(all.size ? 'missed' : 'branch');
+    flash(
+      `Redraw score: ${right} of ${total} (${total ? Math.round((100 * right) / total) : 0}%).` +
+        (all.size ? ' Orange bubbles are the ones to fix.' : ' Nothing missed.')
+    );
+    if (!centerId || !total) return;
+    const next = [...scores, { t: Date.now(), right, total }].slice(-20);
+    setScores(next);
+    try {
+      const store = (await plugin.storage.getSynced<Record<string, Score[]>>('bm-redraw')) || {};
+      await plugin.storage.setSynced('bm-redraw', { ...store, [centerId]: next });
+    } catch {
+      // the score still shows for this session
     }
   };
 
@@ -301,6 +442,14 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           mode === 'local'
             ? await loadLocalGraph(plugin, centerId!, depth, opts)
             : await loadGlobalGraph(plugin, opts);
+        if (mode === 'local' && centerId && drawnKeyRef.current !== `${mode}|${centerId}`) {
+          try {
+            const saved = await plugin.storage.getLocal<Record<string, [number, number]>>(`bm-pos:${centerId}`);
+            savedRef.current = saved ? { key: `${mode}|${centerId}`, pos: saved } : null;
+          } catch {
+            savedRef.current = null;
+          }
+        }
         if (!cancelled) setData(d);
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message || e));
@@ -393,11 +542,18 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     const isRefresh = drawnKeyRef.current === key && posRef.current.size > 0;
     drawnKeyRef.current = key;
     if (!isRefresh) posRef.current = new Map();
-    const old = isRefresh ? posRef.current : new Map<string, { x: number; y: number }>();
+    const saved = !isRefresh && savedRef.current?.key === key ? savedRef.current.pos : null;
+    const old = isRefresh
+      ? posRef.current
+      : new Map<string, { x: number; y: number }>(
+          Object.entries(saved || {}).map(([id, [x, y]]) => [id, { x, y }])
+        );
+    // a page you have laid out before opens the way you left it
+    const seeded = !!saved && view.nodes.filter((n) => old.has(n.id)).length > view.nodes.length * 0.6;
 
     const links: GLink[] = view.links.map((l) => ({ ...l }));
     const nodes: GNode[] = view.nodes.map((n) => ({ ...n, ...(old.get(n.id) || {}) }));
-    if (isRefresh) {
+    if (isRefresh || seeded) {
       // new bubbles start next to something they are joined to, then drift into place
       const byId = new Map(nodes.map((n) => [n.id, n]));
       for (const l of links) {
@@ -491,7 +647,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     simRef.current = sim;
     // A new map gets a head start, then you watch it finish settling.
     // A refresh skips the head start so the bubbles you know stay put.
-    if (!isRefresh) sim.tick(big ? 90 : 60);
+    if (!isRefresh && !seeded) sim.tick(big ? 90 : 60);
 
     // line colors follow the bubble farther from the center
     linkSel.attr('stroke', (l) => {
@@ -505,7 +661,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     let clickTimer: ReturnType<typeof setTimeout> | undefined;
     let hovered: string | null = null;
 
-    const labelText = (n: GNode) => short(live.current.hideAnswers ? n.hiddenLabel : n.label);
+    const labelText = (n: GNode) =>
+      isHidden(n) ? '' : short(live.current.hideAnswers && !live.current.quiz ? n.hiddenLabel : n.label);
     const isMatch = (n: GNode) => {
       const q = live.current.search.trim().toLowerCase();
       return !!q && n.label.toLowerCase().includes(q);
@@ -534,6 +691,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
         const sx = n.x! * k + tf.x;
         const sy = n.y! * k + tf.y;
         if (sx < -40 || sx > width + 40 || sy < -20 || sy > h + 20) continue;
+        if (!labelText(n)) continue;
         const w = labelText(n).length * 6.6 + 12;
         const x0 = sx - w / 2;
         const y0 = sy + radius(n) * k + 2;
@@ -582,6 +740,13 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       // once it has settled, frame the whole map (unless you already zoomed yourself)
       if (!isRefresh && !userZoomed) fit();
       relabel();
+      // remember where the bubbles are for next time
+      const c = live.current;
+      if (c.mode === 'local' && c.centerId && nodes.length <= 500) {
+        const pos: Record<string, [number, number]> = {};
+        for (const n of nodes) pos[n.id] = [Math.round(n.x!), Math.round(n.y!)];
+        plugin.storage.setLocal(`bm-pos:${c.centerId}`, pos).catch(() => {});
+      }
     });
 
     nodeSel
@@ -592,7 +757,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
         linkSel.attr('opacity', (l) =>
           (l.source as GNode).id === n.id || (l.target as GNode).id === n.id ? 1 : 0.06
         );
-        setPeek(live.current.hideAnswers ? n.hiddenLabel : n.label);
+        setPeek(isHidden(n) ? '' : live.current.hideAnswers && !live.current.quiz ? n.hiddenLabel : n.label);
         relabel();
       })
       .on('mouseleave', () => {
@@ -612,7 +777,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       .on('dblclick', (e, n) => {
         e.stopPropagation();
         clearTimeout(clickTimer);
-        if (!live.current.linkMode) openRef.current(n.id);
+        if (!live.current.linkMode && !live.current.quiz) openRef.current(n.id);
       });
 
     nodeSel.call(
@@ -668,7 +833,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     if (isRefresh) svg.call(z.transform, tfRef.current);
     else fit();
     // the motion: let the map finish settling on screen
-    sim.alpha(isRefresh ? 0.25 : 0.5).restart();
+    sim.alpha(isRefresh ? 0.25 : seeded ? 0.12 : 0.5).restart();
 
     return () => {
       sim.stop();
@@ -698,7 +863,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
         linkFrom?.id === n.id ? 4 : sel === n.id ? 3 : n.folded ? 2 : n.isCenter ? 2.5 : 1
       );
     relabelRef.current();
-  }, [search, hideAnswers, view, linkFrom, sel, studyOn, study]);
+  }, [search, hideAnswers, view, linkFrom, sel, paint, study, quiz, got, missed]);
 
   const btn = (active: boolean): React.CSSProperties => ({
     padding: '5px 10px',
@@ -714,10 +879,17 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const selNode = sel ? data?.nodes.find((n) => n.id === sel) : undefined;
   const selKids = selNode ? data!.nodes.filter((n) => n.parentId === selNode.id) : [];
   const nameOf = (id: string) => data?.nodes.find((n) => n.id === id)?.label || 'a note not on this map';
+  const cards = (view?.nodes || []).filter((n) => cardKind(n));
+  const whyCount = cards.filter((n) => cardKind(n) === 'why').length;
+  const openQs = (data?.nodes || []).filter((n) => n.label.includes('??'));
+  const lastScore = scores[scores.length - 1];
+  const daysAgo = lastScore ? Math.floor((Date.now() - lastScore.t) / DAY) : null;
   const anyCloze = !!data?.nodes.some((n) => n.hasCloze);
   const anyCard = !!data?.nodes.some((n) => n.isCard);
   const status = note
     ? note
+    : quiz
+    ? `Redraw: ${got.size + missed.size} of ${(view?.nodes.length || 1) - 1} checked, ${got.size} right. Click a gray bubble and try to name it.`
     : linkMode
     ? linkFrom
       ? `Now click the bubble to link "${short(linkFrom.label, 24)}" to.`
@@ -811,13 +983,17 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             Cards only
           </button>
         )}
-        {anyCard && (
+        {quiz ? (
+          <button style={btn(true)} onClick={finishQuiz} title="Stop and see your score">
+            Finish redraw
+          </button>
+        ) : (
           <button
-            style={btn(studyOn)}
-            onClick={() => setStudyOn((v) => !v)}
-            title="Color flashcards by how you are doing: due, missed, new, going well"
+            style={btn(showStudy || paint !== 'branch')}
+            onClick={() => setShowStudy((v) => !v)}
+            title="Redraw quiz, card check, open questions, study colors"
           >
-            Study colors
+            Study
           </button>
         )}
         {collapsed.size > 0 && (
@@ -875,35 +1051,83 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <Key dash={dash} text={text} />
           </button>
         ))}
-        {studyOn ? (
-          (Object.keys(STUDY) as Study[]).map((k) => (
-            <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 9, background: STUDY[k][0] }} />
-              {STUDY[k][1]}
-            </span>
-          ))
-        ) : (
-          <span>Colors = branches</span>
-        )}
+        {(quiz
+          ? [[GOT, 'got it'], [MISSED, 'missed'], [NOT_A_CARD, 'not checked yet']]
+          : paint === 'study'
+          ? (Object.keys(STUDY) as Study[]).map((k) => STUDY[k])
+          : paint === 'check'
+          ? [[GOT, 'asks for a reason'], [MISSED, 'asks for a name']]
+          : paint === 'open'
+          ? [[MATCH, 'has a ??']]
+          : paint === 'missed'
+          ? [[MISSED, 'missed on your last redraw']]
+          : []
+        ).map(([color, text]) => (
+          <span key={text} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 9, background: color }} />
+            {text}
+          </span>
+        ))}
+        {!quiz && paint === 'branch' && <span>Colors = branches</span>}
       </div>
-      {selNode && (
-        <div
-          style={{
-            position: 'absolute',
-            left: 8,
-            bottom: 34,
-            width: 320,
-            maxWidth: 'calc(100% - 16px)',
-            maxHeight: '55%',
-            overflowY: 'auto',
-            padding: 10,
-            borderRadius: 10,
-            background: '#1f2430',
-            color: '#e8ebf0',
-            boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
-            lineHeight: 1.45,
-          }}
-        >
+      {selNode && quiz && !selNode.isCenter && (
+        <div style={PANEL}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <b style={{ flex: 1, fontSize: 13 }}>
+              {shown === selNode.id || got.has(selNode.id) || missed.has(selNode.id)
+                ? selNode.label
+                : 'Which bubble is this?'}
+            </b>
+            <button style={{ ...btn(false), padding: '1px 7px' }} onClick={() => setSel(null)} title="Close">
+              ✕
+            </button>
+          </div>
+          {shown === selNode.id ? (
+            <>
+              {selNode.back && (
+                <div style={{ marginTop: 4 }}>
+                  <span style={DIM}>Answer: </span>
+                  {selNode.back}
+                </div>
+              )}
+              <div style={{ marginTop: 6 }}>Did you have it, with the reason?</div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                <button style={{ ...btn(true), background: GOT }} onClick={() => mark(selNode.id, true)}>
+                  Got it
+                </button>
+                <button style={{ ...btn(true), background: MISSED }} onClick={() => mark(selNode.id, false)}>
+                  Missed it
+                </button>
+              </div>
+            </>
+          ) : got.has(selNode.id) || missed.has(selNode.id) ? (
+            <div style={{ marginTop: 4, ...DIM }}>
+              Already checked: {got.has(selNode.id) ? 'got it' : 'missed it'}.
+            </div>
+          ) : (
+            <>
+              <div style={{ marginTop: 4 }}>
+                Say it out loud or write it down first. Include the reason if it has one.
+              </div>
+              <div style={{ marginTop: 4, ...DIM }}>
+                Hint: it sits under{' '}
+                {(() => {
+                  const parent = data?.nodes.find((n) => n.id === selNode.parentId);
+                  return parent && !isHidden(parent)
+                    ? `"${short(parent.label, 40)}"`
+                    : 'a bubble you have not checked yet';
+                })()}
+                .
+              </div>
+              <button style={{ ...btn(true), marginTop: 8 }} onClick={() => setShown(selNode.id)}>
+                Reveal
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {selNode && !quiz && (
+        <div style={PANEL}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <b style={{ flex: 1, fontSize: 13 }}>
               {hideAnswers && !reveal ? selNode.hiddenLabel : selNode.label}
@@ -914,7 +1138,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           </div>
           {selNode.back && (
             <div style={{ marginTop: 4 }}>
-              <span style={{ opacity: 0.6 }}>Answer: </span>
+              <span style={DIM}>Answer: </span>
               {hideAnswers && !reveal ? '[…]' : selNode.back}
             </div>
           )}
@@ -923,6 +1147,11 @@ export function GraphView({ centerId, height, onOpened }: Props) {
               Show answer
             </button>
           )}
+          {cardKind(selNode) === 'name' && (
+            <div style={{ marginTop: 4, color: MISSED }}>
+              This card asks for a name. Could the blank be the reason or what happens next instead?
+            </div>
+          )}
           {studyOn && study.get(selNode.id) && (
             <div style={{ marginTop: 4, color: STUDY[study.get(selNode.id)!][0] }}>
               Card: {STUDY[study.get(selNode.id)!][1]}
@@ -930,7 +1159,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           )}
           {selKids.length > 0 && (
             <div style={{ marginTop: 6 }}>
-              <span style={{ opacity: 0.6 }}>Under it:</span>
+              <span style={DIM}>Under it:</span>
               <ul style={{ margin: '2px 0 0', paddingLeft: 16 }}>
                 {selKids.slice(0, 8).map((k) => (
                   <li key={k.id} style={{ cursor: 'pointer' }} onClick={() => setSel(k.id)}>
@@ -938,12 +1167,12 @@ export function GraphView({ centerId, height, onOpened }: Props) {
                   </li>
                 ))}
               </ul>
-              {selKids.length > 8 && <span style={{ opacity: 0.6 }}>and {selKids.length - 8} more</span>}
+              {selKids.length > 8 && <span style={DIM}>and {selKids.length - 8} more</span>}
             </div>
           )}
           {selNode.refs.length > 0 && (
             <div style={{ marginTop: 6 }}>
-              <span style={{ opacity: 0.6 }}>Links to:</span>
+              <span style={DIM}>Links to:</span>
               {selNode.refs.map((id) => (
                 <div key={id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
                   <span style={{ flex: 1 }}>{short(nameOf(id), 40)}</span>
@@ -960,7 +1189,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           )}
           {selNode.mentions.length > 0 && (
             <div style={{ marginTop: 6 }}>
-              <span style={{ opacity: 0.6 }}>Linked from:</span>
+              <span style={DIM}>Linked from:</span>
               {selNode.mentions.map((m) => (
                 <div key={m.id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
                   <span style={{ flex: 1 }}>{short(m.parentId ? nameOf(m.parentId) : 'a bullet', 40)}</span>
@@ -979,8 +1208,22 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <button style={btn(true)} onClick={() => openRem(selNode.id)}>
               Open
             </button>
-            <button style={btn(adding)} onClick={() => setAdding((v) => !v)}>
+            <button style={btn(adding === 'bubble')} onClick={() => setAdding(adding === 'bubble' ? false : 'bubble')}>
               Add bubble
+            </button>
+            <button
+              style={btn(adding === 'card')}
+              onClick={() => setAdding(adding === 'card' ? false : 'card')}
+              title="Add a flashcard under this bubble"
+            >
+              Add card
+            </button>
+            <button
+              style={btn(adding === 'set')}
+              onClick={() => setAdding(adding === 'set' ? false : 'set')}
+              title="Add the fixed questions to answer about this topic"
+            >
+              Questions
             </button>
             <button
               style={btn(false)}
@@ -998,7 +1241,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
               </button>
             )}
           </div>
-          {adding && (
+          {adding === 'bubble' && (
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
               <input
                 autoFocus
@@ -1009,21 +1252,175 @@ export function GraphView({ centerId, height, onOpened }: Props) {
                   if (e.key === 'Enter') submitAdd();
                   if (e.key === 'Escape') setAdding(false);
                 }}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  padding: '5px 10px',
-                  borderRadius: 999,
-                  border: '1px solid rgba(138,147,163,0.6)',
-                  background: 'transparent',
-                  color: 'inherit',
-                }}
+                style={FIELD}
               />
               <button style={btn(true)} onClick={submitAdd}>
                 Add
               </button>
             </div>
           )}
+          {adding === 'card' && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {(
+                  [
+                    ['Why?', `Why does ${selNode.label} `],
+                    ['What next?', `What happens next after ${selNode.label}?`],
+                    ['What if?', `What if ${selNode.label} breaks?`],
+                  ] as [string, string][]
+                ).map(([name, text]) => (
+                  <button key={name} style={{ ...btn(false), padding: '2px 8px' }} onClick={() => setAddText(text)}>
+                    {name}
+                  </button>
+                ))}
+              </div>
+              <input
+                autoFocus
+                placeholder="Question (a why or a what-if works best)"
+                value={addText}
+                onChange={(e) => setAddText(e.target.value)}
+                style={{ ...FIELD, width: '100%', boxSizing: 'border-box', marginTop: 6 }}
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <input
+                  placeholder="Answer, with the because"
+                  value={addBack}
+                  onChange={(e) => setAddBack(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') submitAdd();
+                    if (e.key === 'Escape') setAdding(false);
+                  }}
+                  style={FIELD}
+                />
+                <button style={btn(true)} onClick={submitAdd}>
+                  Add
+                </button>
+              </div>
+            </div>
+          )}
+          {adding === 'set' && (
+            <div style={{ marginTop: 8 }}>
+              <div style={DIM}>
+                Pick by shape. If you can point at it, it is a thing. If it is a story of events, it is a process.
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                {Object.keys(QUESTION_SETS).map((name) => (
+                  <button key={name} style={btn(false)} onClick={() => addSet(name)} title={QUESTION_SETS[name].join('  ')}>
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {showStudy && !quiz && (
+        <div style={{ ...PANEL, left: 'auto', right: 8, bottom: 'auto', top: 76, maxHeight: '75%' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <b style={{ flex: 1, fontSize: 13 }}>Study</b>
+            <button style={{ ...btn(false), padding: '1px 7px' }} onClick={() => setShowStudy(false)} title="Close">
+              ✕
+            </button>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            <b>Redraw from memory</b>
+            <div style={DIM}>
+              The names hide. Click each bubble, say what it is, then check yourself. This is the step that
+              shows what you really know.
+            </div>
+            {lastScore && (
+              <div style={{ marginTop: 2 }}>
+                Last time: {lastScore.right} of {lastScore.total} (
+                {Math.round((100 * lastScore.right) / lastScore.total)}%),{' '}
+                {daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo} days ago`}.
+                {daysAgo! >= 7 && <span style={{ color: MISSED }}> Time to redraw.</span>}
+              </div>
+            )}
+            <button
+              style={{ ...btn(true), marginTop: 6 }}
+              disabled={mode !== 'local' || !view || view.nodes.length < 2}
+              onClick={startQuiz}
+            >
+              Start redraw
+            </button>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <b>Card check</b>
+            {cards.length === 0 ? (
+              <div style={DIM}>No flashcards on this map yet.</div>
+            ) : (
+              <>
+                <div>
+                  {cards.length} cards. {whyCount} ask for a reason (
+                  {Math.round((100 * whyCount) / cards.length)}%).
+                  {whyCount * 2 < cards.length ? (
+                    <span style={{ color: MISSED }}> Aim for at least half.</span>
+                  ) : (
+                    ' That meets the half rule.'
+                  )}
+                </div>
+                {mode === 'local' && cards.length > 15 && (
+                  <div style={{ color: MISSED }}>That is over the 10 to 15 cards per lecture cap.</div>
+                )}
+                <div style={DIM}>A guess from answer length: 1 or 2 words counts as a name.</div>
+                <button
+                  style={{ ...btn(paint === 'check'), marginTop: 6 }}
+                  onClick={() => setPaint(paint === 'check' ? 'branch' : 'check')}
+                >
+                  Show on map
+                </button>
+              </>
+            )}
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <b>Open questions (??)</b>
+            {openQs.length === 0 ? (
+              <div style={DIM}>None. Type ?? in a bullet when the source gives no reason, and it shows here.</div>
+            ) : (
+              <>
+                <ul style={{ margin: '2px 0 0', paddingLeft: 16 }}>
+                  {openQs.slice(0, 10).map((n) => (
+                    <li key={n.id} style={{ cursor: 'pointer' }} onClick={() => setSel(n.id)}>
+                      {short(n.label, 60)}
+                    </li>
+                  ))}
+                </ul>
+                {openQs.length > 10 && <div style={DIM}>and {openQs.length - 10} more</div>}
+                <button
+                  style={{ ...btn(paint === 'open'), marginTop: 6 }}
+                  onClick={() => setPaint(paint === 'open' ? 'branch' : 'open')}
+                >
+                  Show on map
+                </button>
+              </>
+            )}
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <b>Colors</b>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+              <button style={btn(paint === 'branch')} onClick={() => setPaint('branch')}>
+                Branches
+              </button>
+              {anyCard && (
+                <button
+                  style={btn(paint === 'study')}
+                  onClick={() => setPaint('study')}
+                  title="Color flashcards by how you are doing: due, missed, new, going well"
+                >
+                  Card progress
+                </button>
+              )}
+              {missed.size > 0 && (
+                <button style={btn(paint === 'missed')} onClick={() => setPaint('missed')}>
+                  Last redraw misses
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
       {showHelp && (
@@ -1052,7 +1449,10 @@ export function GraphView({ centerId, height, onOpened }: Props) {
             <li>Double-click empty space to add a new bubble to the page. "Add bubble" on a card adds one under that bubble.</li>
             <li>"Link bubbles" or "Link to…": pick two bubbles to add a [[link]]. "Unlink" on a card removes one.</li>
             <li>"Fold" tucks a branch away. The bubble shows how many are inside.</li>
-            <li>"Study colors" paints your flashcards: due, missed, new, going well.</li>
+            <li>"Study" opens the study tools: the redraw quiz, the card check, your ?? list and card colors.</li>
+            <li>Redraw: names hide, you recall each bubble, and you get a score. Do it a week after you make a map.</li>
+            <li>"Add card" makes a flashcard under a bubble. "Questions" adds the fixed why questions to answer.</li>
+            <li>The map remembers how you arranged each page.</li>
             <li>"Save picture" saves the map you see as an image.</li>
             <li>The map updates by itself a moment after you stop typing.</li>
             <li>Drag a bubble and let go to watch it spring back. Scroll or pinch to zoom.</li>
