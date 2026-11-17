@@ -1,17 +1,17 @@
 {
   "manifestVersion": 1,
-  "id": "bolurin_why_loop",
-  "name": "Why Loop",
+  "id": "bolurin_graph_view",
+  "name": "Bubble Map",
   "author": "Bolurin",
   "repoUrl": "https://github.com/bojof1/Claude-Sandbox",
   "version": {
     "major": 1,
-    "minor": 1,
+    "minor": 2,
     "patch": 0
   },
   "theme": [],
   "enableOnMobile": true,
-  "description": "A step by step study guide for lectures: turn objectives into why questions, map the answers, make cards that test reasons, then track misses and a weekly score.",
+  "description": "See your notes as a map of bubbles and branches, then study from it: hide the names and redraw the map from memory, check that your flashcards ask for reasons, and track open questions.",
   "requestNative": false,
   "requiredScopes": [
     {

@@ -301,6 +301,16 @@ export async function loadLocalGraph(
 
     // keep going down the outline inside this step, so nothing under the page is cut off
     while (batch.length > 0) {
+      // a very big page: stop asking RemNote for more once the map is full
+      const room = opts.maxNodes - b.nodes.size;
+      if (room <= 0) {
+        truncated = true;
+        break;
+      }
+      if (batch.length > room + 50) {
+        batch = batch.slice(0, room + 50);
+        truncated = true;
+      }
       const rems = (((await plugin.rem.findMany(batch)) || []) as unknown as RemLike[]).filter(
         Boolean
       );

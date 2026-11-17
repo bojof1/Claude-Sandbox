@@ -119,7 +119,7 @@ interface Props {
   onOpened?: () => void;
 }
 
-export function GraphView({ centerId, height, onOpened }: Props) {
+export function GraphView({ centerId: pageId, height, onOpened }: Props) {
   const plugin = usePlugin();
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown>>();
@@ -180,6 +180,9 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** While a redraw runs, the map stays on its page even if you open another page. */
+  const [quizPage, setQuizPage] = useState<string | null>(null);
+  const centerId = quizPage ?? pageId;
 
   // live values the drawing code reads without redrawing everything
   const live = useRef({ hideAnswers, search, linkMode, linkFrom, paint, study, mode, centerId, quiz, got, missed, quizRoot, needs: new Map<string, string>() });
@@ -341,6 +344,8 @@ export function GraphView({ centerId, height, onOpened }: Props) {
 
   const startQuiz = (rootId?: string) => {
     const root = rootId || centerId || null;
+    setQuizPage(centerId || null);
+    setMode('local');
     setQuizRoot(root);
     setChecks({});
     setGot(new Set());
@@ -441,6 +446,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
     const miss = new Set([...reached].filter((id) => !got.has(id)));
     const root = quizRoot || centerId;
     setQuiz(false);
+    setQuizPage(null);
     setSel(null);
     setMissed(miss);
     setPaint(miss.size ? 'missed' : 'plain');
@@ -466,20 +472,25 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const queueRedraw = async (rootId: string) => {
     const n = labelOf(rootId);
     if (!n) return;
+    let id = '';
     try {
-      const id = await addChild(
+      id = await addChild(
         plugin,
         rootId,
         `${REDRAW_CARD} ${n.label}`,
         'Open Bubble Map, click this bubble, press Redraw from here. Explain each part before you look.'
       );
-      const next = { ...queued, [rootId]: id };
-      setQueued(next);
-      const all = (await plugin.storage.getSynced<Record<string, string>>('bm-redraw-cards')) || {};
-      await plugin.storage.setSynced('bm-redraw-cards', { ...all, [rootId]: id });
+      setQueued((q) => ({ ...q, [rootId]: id }));
       flash('Added one card to your flashcard queue. RemNote will bring this redraw back on its own schedule.');
     } catch (e: any) {
-      flash(`Could not add the card: ${String(e?.message || e)}`);
+      return flash(`Could not add the card: ${String(e?.message || e)}`);
+    }
+    try {
+      // remember it, so the button does not make a second card
+      const all = (await plugin.storage.getSynced<Record<string, string>>('bm-redraw-cards')) || {};
+      await plugin.storage.setSynced('bm-redraw-cards', { ...all, [rootId]: id });
+    } catch {
+      // the card is made either way; only the "already queued" note may not carry over
     }
   };
 
@@ -1136,7 +1147,7 @@ export function GraphView({ centerId, height, onOpened }: Props) {
   const status = note
     ? note
     : quiz
-    ? `Redraw${rootNode && !rootNode.isCenter ? ` of "${short(rootNode.label, 24)}"` : ''}: ${got.size} right, ${missed.size} missed, ${Math.max(reachedCount - got.size - missed.size, 0)} to mark. Click a bubble marked ? to go deeper.`
+    ? `Redraw${rootNode && !rootNode.isCenter ? ` of "${short(rootNode.label, 24)}"` : ''}: ${got.size} right, ${missed.size} missed, ${Math.max(reachedCount - got.size - missed.size, 0)} to mark. Click a bubble marked ? to go deeper.${quizPage && pageId !== quizPage ? ' (The map stays on this page until you finish.)' : ''}`
     : linkMode
     ? linkFrom
       ? `Now click the bubble to link "${short(linkFrom.label, 24)}" to.`
@@ -1167,10 +1178,10 @@ export function GraphView({ centerId, height, onOpened }: Props) {
       }}
     >
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: 6 }}>
-        <button style={btn(mode === 'local')} onClick={() => setMode('local')}>
+        <button style={btn(mode === 'local')} onClick={() => (quiz ? flash('Finish the redraw first.') : setMode('local'))}>
           This page
         </button>
-        <button style={btn(mode === 'global')} onClick={() => setMode('global')}>
+        <button style={btn(mode === 'global')} onClick={() => (quiz ? flash('Finish the redraw first.') : setMode('global'))}>
           Everything
         </button>
         {mode === 'local' && (
@@ -1273,9 +1284,9 @@ export function GraphView({ centerId, height, onOpened }: Props) {
           flexShrink: 0,
           fontWeight: note || linkMode ? 600 : 400,
         }}
-        title={peek || status}
+        title={note || linkMode ? status : peek || status}
       >
-        {peek || status}
+        {note || linkMode ? status : peek || status}
       </div>
       <svg ref={svgRef} style={{ flex: 1, width: '100%', minHeight: 200, touchAction: 'none' }} />
       <div style={{ display: 'flex', gap: 14, padding: '4px 8px', opacity: 0.75, flexWrap: 'wrap' }}>
