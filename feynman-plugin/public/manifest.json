@@ -11,7 +11,7 @@
   },
   "theme": [],
   "enableOnMobile": true,
-  "description": "Explain the page you are studying from memory, in plain words. The plugin checks your explanation against your own notes, shows the gaps, and moves you up a ladder of harder explanations until you have mastered the idea.",
+  "description": "Explain an idea from memory in plain words. It checks you against your own notes, shows the gaps, and moves you up five levels until you master it.",
   "requestNative": false,
   "requiredScopes": [
     {
