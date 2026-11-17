@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "bolurin_feynman",
+  "name": "Feynman Coach",
+  "author": "Bolurin",
+  "repoUrl": "https://github.com/bojof1/Claude-Sandbox",
+  "version": {
+    "major": 1,
+    "minor": 0,
+    "patch": 0
+  },
+  "theme": [],
+  "enableOnMobile": true,
+  "description": "Explain the page you are studying from memory, in plain words. The plugin checks your explanation against your own notes, shows the gaps, and moves you up a ladder of harder explanations until you have mastered the idea.",
+  "requestNative": false,
+  "requiredScopes": [
+    {
+      "type": "All",
+      "level": "ReadCreateModifyDelete"
+    }
+  ]
+}
