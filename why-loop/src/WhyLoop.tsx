@@ -76,6 +76,8 @@ const box: React.CSSProperties = {
 const dim: React.CSSProperties = { opacity: 0.65 };
 const textarea = (minHeight: number): React.CSSProperties => ({ ...field, minHeight, resize: 'vertical', fontFamily: 'inherit' });
 const WARN = '#F2994A';
+/** A typed score as a whole number, or null if it is blank or not a whole number. */
+const whole = (s: string) => (/^\s*\d+\s*$/.test(s) ? Number(s) : null);
 const GOOD = '#36B37E';
 const BLUE = '#4C9AFF';
 
@@ -133,6 +135,10 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
       cancelled = true;
     };
   }, [pageId, plugin]);
+
+  /** The newest data on screen, for saves that run after a delay. */
+  const latest = useRef(data);
+  latest.current = data;
 
   const save = (next: Data) => {
     if (loadFailed) return setSaveError('Your Why Loop data did not load, so nothing was saved. Press Try again.');
@@ -240,10 +246,33 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
     patch(l, { done: l.done.map((d, j) => (j === i ? true : d)), step: Math.min(i + 1, STEPS.length) });
 
   const [showAll, setShowAll] = useState(false);
+  /** Lecture waiting for a second tap on Remove. */
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  /** Teach it text being typed. Saved when typing stops, not on every key. */
+  const [teachDraft, setTeachDraftState] = useState<{ id: string; text: string } | null>(null);
+  const draftRef = useRef<{ id: string; text: string } | null>(null);
+  const setTeachDraft = (d: { id: string; text: string } | null) => {
+    draftRef.current = d;
+    setTeachDraftState(d);
+  };
+  const teachTimer = useRef<ReturnType<typeof setTimeout>>();
+  const saveTeach = (id: string, text: string) => {
+    clearTimeout(teachTimer.current);
+    const d = latest.current;
+    const l = d.lectures.find((x) => x.id === id);
+    if (l && (l.teach || '') !== text) save({ ...d, lectures: d.lectures.map((x) => (x.id === id ? { ...x, teach: text } : x)) });
+    setTeachDraft(null);
+  };
+  const typeTeach = (id: string, text: string) => {
+    setTeachDraft({ id, text });
+    clearTimeout(teachTimer.current);
+    teachTimer.current = setTimeout(() => saveTeach(id, text), 800);
+  };
   const [qText, setQText] = useState('');
   const [qShape, setQShape] = useState('Thing');
   const [note, setNote] = useState('');
   const [score, setScore] = useState({ right: '', total: '' });
+  const [scoreNote, setScoreNote] = useState('');
 
   /** Put the typed questions into the lecture's page, each with its fixed questions under it. */
   const addQuestions = async (l: Lecture) => {
@@ -267,9 +296,12 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
 
   // ---------- 20-minute map timer ----------
   const [left, setLeft] = useState<number | null>(null);
+  /** The lecture the timer was started for. */
+  const [timerFor, setTimerFor] = useState<string | null>(null);
   const tick = useRef<ReturnType<typeof setInterval>>();
   useEffect(() => () => clearInterval(tick.current), []);
-  const startTimer = () => {
+  const startTimer = (lectureId: string) => {
+    setTimerFor(lectureId);
     const end = Date.now() + 20 * 60 * 1000;
     setLeft(20 * 60);
     clearInterval(tick.current);
@@ -286,6 +318,21 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
 
   // ---------- Teach it ----------
   const [teachNote, setTeachNote] = useState('');
+
+  // Typed text and messages belong to one lecture: clear them when a different lecture opens,
+  // and save any Teach it text that was still waiting.
+  useEffect(() => {
+    setQText('');
+    setNote('');
+    setScore({ right: '', total: '' });
+    setScoreNote('');
+    setTeachNote('');
+    setConfirmRemove(null);
+    return () => {
+      const d = draftRef.current;
+      if (d) saveTeach(d.id, d.text);
+    };
+  }, [openId]);
   const checkPrompt = (l: Lecture) =>
     [
       'Please check my explanation. I wrote it from memory for a first-year student.',
@@ -293,7 +340,7 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
       'Do not teach me new material. Tell me which sentence to fix first.',
       '',
       `TOPIC: ${lectureLabel(l)}`,
-      `MY EXPLANATION: ${l.teach || ''}`,
+      `MY EXPLANATION: ${teachDraft?.id === l.id ? teachDraft.text : l.teach || ''}`,
       `MY OWN CHECK, NOT SURE ABOUT: ${TEACH_CHECKS.filter((_, i) => !l.teachOk?.[i]).join('; ') || 'nothing'}`,
     ].join('\n');
   const addTeachNote = async (l: Lecture) => {
@@ -377,10 +424,12 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
   // ---------- Weekly tab ----------
   const [wk, setWk] = useState({ course: '', right: '', total: '' });
   const [newCourse, setNewCourse] = useState('');
+  const [weekNote, setWeekNote] = useState('');
   const addWeek = () => {
-    const right = Number(wk.right);
-    const total = Number(wk.total);
-    if (!wk.course.trim() || !total || right > total || right < 0) return;
+    const right = whole(wk.right);
+    const total = whole(wk.total);
+    if (!wk.course.trim() || right === null || !total || right > total) return setWeekNote('Type both numbers, for example 7 out of 10.');
+    setWeekNote('');
     save({ ...data, weeks: [...data.weeks, { t: Date.now(), course: wk.course.trim(), right, total }] });
     setWk({ course: wk.course, right: '', total: '' });
   };
@@ -405,7 +454,7 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
       button: s === MAP_STEP ? 'Start 20 min map' : `Go to step ${s + 1}`,
       go: () => {
         goTo(l, s);
-        if (s === MAP_STEP) startTimer();
+        if (s === MAP_STEP) startTimer(l.id);
       },
     });
   }
@@ -740,8 +789,8 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
 
                             {i === MAP_STEP && (
                               <div style={{ marginTop: 8 }}>
-                                {left === null ? (
-                                  <button style={pill(false)} onClick={(e) => (e.preventDefault(), startTimer())}>
+                                {left === null || timerFor !== l.id ? (
+                                  <button style={pill(false)} onClick={(e) => (e.preventDefault(), startTimer(l.id))}>
                                     Start 20 minute timer
                                   </button>
                                 ) : (
@@ -778,15 +827,18 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                                 <button
                                   style={pill(false)}
                                   onClick={() => {
-                                    const r = Number(score.right);
-                                    const t = Number(score.total);
-                                    if (t > 0 && r >= 0 && r <= t) patch(l, { quick: [r, t] });
+                                    const r = whole(score.right);
+                                    const t = whole(score.total);
+                                    if (r === null || !t || r > t) return setScoreNote('Type both numbers, for example 6 out of 7.');
+                                    setScoreNote('');
+                                    patch(l, { quick: [r, t] });
                                   }}
                                 >
                                   Save
                                 </button>
                               </div>
                             )}
+                            {i === QUICK_TEST_STEP && scoreNote && <div style={{ marginTop: 4, color: WARN }}>{scoreNote}</div>}
                             {i === QUICK_TEST_STEP && l.quick && (
                               <div style={{ marginTop: 4 }}>
                                 Saved: {l.quick[0]} of {l.quick[1]}.
@@ -802,8 +854,9 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                                 <textarea
                                   style={textarea(80)}
                                   placeholder="Your explanation, from memory"
-                                  value={l.teach || ''}
-                                  onChange={(e) => patch(l, { teach: e.target.value })}
+                                  value={teachDraft?.id === l.id ? teachDraft.text : l.teach || ''}
+                                  onChange={(e) => typeTeach(l.id, e.target.value)}
+                                  onBlur={(e) => saveTeach(l.id, e.target.value)}
                                 />
                                 <div style={{ ...dim, marginTop: 6 }}>Now open your notes and check yourself:</div>
                                 {TEACH_CHECKS.map((c, j) => (
@@ -826,12 +879,12 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                                       Show my notes
                                     </button>
                                   )}
-                                  {(l.teach || '').trim() && (l.teachOk || []).filter(Boolean).length < 3 && l.remId && (
+                                  {(teachDraft?.id === l.id ? teachDraft.text : l.teach || '').trim() && (l.teachOk || []).filter(Boolean).length < 3 && l.remId && (
                                     <button style={pill(false)} onClick={() => addTeachNote(l)}>
                                       Add a ?? to my page
                                     </button>
                                   )}
-                                  {(l.teach || '').trim() && (
+                                  {(teachDraft?.id === l.id ? teachDraft.text : l.teach || '').trim() && (
                                     <button
                                       style={pill(false)}
                                       onClick={async () =>
@@ -879,9 +932,27 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
                               Open its page
                             </button>
                           )}
-                          <button style={pill(false)} onClick={() => save({ ...data, lectures: data.lectures.filter((x) => x.id !== l.id) })}>
-                            Remove
-                          </button>
+                          {confirmRemove === l.id ? (
+                            <>
+                              <span style={{ color: WARN, alignSelf: 'center' }}>Remove this lecture and its steps? This cannot be undone.</span>
+                              <button
+                                style={{ ...pill(true), background: WARN }}
+                                onClick={() => {
+                                  save({ ...data, lectures: data.lectures.filter((x) => x.id !== l.id) });
+                                  setConfirmRemove(null);
+                                }}
+                              >
+                                Yes, remove
+                              </button>
+                              <button style={pill(false)} onClick={() => setConfirmRemove(null)}>
+                                Keep it
+                              </button>
+                            </>
+                          ) : (
+                            <button style={pill(false)} onClick={() => setConfirmRemove(l.id)}>
+                              Remove
+                            </button>
+                          )}
                         </div>
                       </>
                     );
@@ -1064,6 +1135,7 @@ export function WhyLoop({ pageId }: { pageId: string | undefined }) {
             <button style={{ ...pill(true), marginTop: 6 }} onClick={addWeek}>
               Save
             </button>
+            {weekNote && <div style={{ marginTop: 4, color: WARN }}>{weekNote}</div>}
             {[...new Set(data.weeks.map((w) => w.course))].map((c) => {
               const rows = data.weeks.filter((w) => w.course === c).slice(-8);
               return (
