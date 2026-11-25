@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "remnote-why-loop",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Why Loop: a step by step study guide for lectures, as a RemNote plugin.",
   "license": "MIT",
   "scripts": {
