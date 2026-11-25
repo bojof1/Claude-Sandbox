@@ -14,6 +14,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 | [remnoteio/remnote-plugin-template-react](https://github.com/remnoteio/remnote-plugin-template-react) | Official starter template. Diff your plugins against it to catch drift in build config and manifest. |
 | [browneyedsoul/remnote-plugins](https://github.com/browneyedsoul/remnote-plugins) | Community plugin pack. Active Recall in Editor and Callout are the two worth trying for Why Loop pages. |
 | [hannesfrank/awesome-remnote](https://github.com/hannesfrank/awesome-remnote) | Running index of RemNote plugins, themes and CSS. Check here first before building something new. |
+| [bjsi/incremental-everything](https://github.com/bjsi/incremental-everything) | Mixes lab papers, notes and video clips into your RemNote review queue in small pieces, so Priolo lab reading gets done alongside your cards. |
 
 ## Spaced repetition  (`spaced-repetition/`)
 
@@ -32,6 +33,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 | [travisvn/awesome-claude-skills](https://github.com/travisvn/awesome-claude-skills) | Curated skill list with a Skills vs MCP explainer. |
 | [ComposioHQ/awesome-claude-skills](https://github.com/ComposioHQ/awesome-claude-skills) | Largest curated skill list, grouped by category. |
 | [hesreallyhim/awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) | Skills, hooks, slash commands and plugins for Claude Code. |
+| [Imbad0202/academic-research-skills](https://github.com/Imbad0202/academic-research-skills) | Skills that walk a paper from research to draft to peer-style review and revision. Useful for your MAMS thesis and lab write-ups. |
 
 ## MCP servers  (`mcp-servers/`)
 
@@ -39,6 +41,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 |---|---|
 | [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers) | Official MCP server collection. Filesystem, git, fetch and more. |
 | [54yyyu/zotero-mcp](https://github.com/54yyyu/zotero-mcp) | Connects a Zotero library to Claude with semantic search and PDF annotations. Fits Priolo lab reading and thesis citations. |
+| [cyanheads/pubmed-mcp-server](https://github.com/cyanheads/pubmed-mcp-server) | PubMed server that also pulls full text from Europe PMC and Unpaywall plus MeSH terms, so Claude can read the whole paper and not just the abstract. |
 
 ## Diagrams  (`diagrams/`)
 
@@ -46,6 +49,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 |---|---|
 | [excalidraw/excalidraw-mcp](https://github.com/excalidraw/excalidraw-mcp) | Official Excalidraw MCP. Already connected in Claude, so this is here for reference. |
 | [yctimlin/mcp_excalidraw](https://github.com/yctimlin/mcp_excalidraw) | Persistent live canvas Claude can edit across turns. Upgrade path if one-shot diagrams aren't enough. |
+| [jgraph/drawio-mcp](https://github.com/jgraph/drawio-mcp) | Official draw.io server that lets Claude build editable pathway and mechanism diagrams you can keep tweaking by hand. |
 
 ## DeepSeek Harness  (`deepseek-harness/`)
 

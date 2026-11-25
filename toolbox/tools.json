@@ -17,6 +17,10 @@
       {
         "repo": "hannesfrank/awesome-remnote",
         "why": "Running index of RemNote plugins, themes and CSS. Check here first before building something new."
+      },
+      {
+        "repo": "bjsi/incremental-everything",
+        "why": "Mixes lab papers, notes and video clips into your RemNote review queue in small pieces, so Priolo lab reading gets done alongside your cards."
       }
     ],
     "spaced-repetition": [
@@ -53,6 +57,10 @@
       {
         "repo": "hesreallyhim/awesome-claude-code",
         "why": "Skills, hooks, slash commands and plugins for Claude Code."
+      },
+      {
+        "repo": "Imbad0202/academic-research-skills",
+        "why": "Skills that walk a paper from research to draft to peer-style review and revision. Useful for your MAMS thesis and lab write-ups."
       }
     ],
     "mcp-servers": [
@@ -63,6 +71,10 @@
       {
         "repo": "54yyyu/zotero-mcp",
         "why": "Connects a Zotero library to Claude with semantic search and PDF annotations. Fits Priolo lab reading and thesis citations."
+      },
+      {
+        "repo": "cyanheads/pubmed-mcp-server",
+        "why": "PubMed server that also pulls full text from Europe PMC and Unpaywall plus MeSH terms, so Claude can read the whole paper and not just the abstract."
       }
     ],
     "diagrams": [
@@ -73,6 +85,10 @@
       {
         "repo": "yctimlin/mcp_excalidraw",
         "why": "Persistent live canvas Claude can edit across turns. Upgrade path if one-shot diagrams aren't enough."
+      },
+      {
+        "repo": "jgraph/drawio-mcp",
+        "why": "Official draw.io server that lets Claude build editable pathway and mechanism diagrams you can keep tweaking by hand."
       }
     ],
     "deepseek-harness": [
