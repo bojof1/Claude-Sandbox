@@ -15,6 +15,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 | [browneyedsoul/remnote-plugins](https://github.com/browneyedsoul/remnote-plugins) | Community plugin pack. Active Recall in Editor and Callout are the two worth trying for Why Loop pages. |
 | [hannesfrank/awesome-remnote](https://github.com/hannesfrank/awesome-remnote) | Running index of RemNote plugins, themes and CSS. Check here first before building something new. |
 | [bjsi/incremental-everything](https://github.com/bjsi/incremental-everything) | Mixes lab papers, notes and video clips into your RemNote review queue in small pieces, so Priolo lab reading gets done alongside your cards. |
+| [melvinmng/remnote-flashcard-notes](https://github.com/melvinmng/remnote-flashcard-notes) | Shows a notes field under each flashcard during review, a natural spot for your Why Loop reasoning. Brand new with one developer, so treat it as a trial. |
 
 ## Spaced repetition  (`spaced-repetition/`)
 
@@ -41,7 +42,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 |---|---|
 | [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers) | Official MCP server collection. Filesystem, git, fetch and more. |
 | [54yyyu/zotero-mcp](https://github.com/54yyyu/zotero-mcp) | Connects a Zotero library to Claude with semantic search and PDF annotations. Fits Priolo lab reading and thesis citations. |
-| [cyanheads/pubmed-mcp-server](https://github.com/cyanheads/pubmed-mcp-server) | PubMed server that also pulls full text from Europe PMC and Unpaywall plus MeSH terms, so Claude can read the whole paper and not just the abstract. |
+| [robert7/remnote-mcp-server](https://github.com/robert7/remnote-mcp-server) | Lets Claude search, read and write your RemNote knowledge base, so skills like Why Loop and Feynman Coach can work straight from your real notes. |
 
 ## Diagrams  (`diagrams/`)
 

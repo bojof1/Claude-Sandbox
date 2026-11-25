@@ -21,6 +21,10 @@
       {
         "repo": "bjsi/incremental-everything",
         "why": "Mixes lab papers, notes and video clips into your RemNote review queue in small pieces, so Priolo lab reading gets done alongside your cards."
+      },
+      {
+        "repo": "melvinmng/remnote-flashcard-notes",
+        "why": "Shows a notes field under each flashcard during review, a natural spot for your Why Loop reasoning. Brand new with one developer, so treat it as a trial."
       }
     ],
     "spaced-repetition": [
@@ -73,8 +77,8 @@
         "why": "Connects a Zotero library to Claude with semantic search and PDF annotations. Fits Priolo lab reading and thesis citations."
       },
       {
-        "repo": "cyanheads/pubmed-mcp-server",
-        "why": "PubMed server that also pulls full text from Europe PMC and Unpaywall plus MeSH terms, so Claude can read the whole paper and not just the abstract."
+        "repo": "robert7/remnote-mcp-server",
+        "why": "Lets Claude search, read and write your RemNote knowledge base, so skills like Why Loop and Feynman Coach can work straight from your real notes."
       }
     ],
     "diagrams": [
