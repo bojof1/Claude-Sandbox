@@ -1,0 +1,85 @@
+{
+  "updated": "2026-11-25",
+  "folders": {
+    "remnote": [
+      {
+        "repo": "remnoteio/remnote-official-plugins",
+        "why": "RemNote's own plugins. Best reference for how Why Loop, Bubble Map and Feynman Coach should be structured before they go public."
+      },
+      {
+        "repo": "remnoteio/remnote-plugin-template-react",
+        "why": "Official starter template. Diff your plugins against it to catch drift in build config and manifest."
+      },
+      {
+        "repo": "browneyedsoul/remnote-plugins",
+        "why": "Community plugin pack. Active Recall in Editor and Callout are the two worth trying for Why Loop pages."
+      },
+      {
+        "repo": "hannesfrank/awesome-remnote",
+        "why": "Running index of RemNote plugins, themes and CSS. Check here first before building something new."
+      }
+    ],
+    "spaced-repetition": [
+      {
+        "repo": "open-spaced-repetition/awesome-fsrs",
+        "why": "Index of everything built on FSRS, the scheduler RemNote uses."
+      },
+      {
+        "repo": "open-spaced-repetition/ts-fsrs",
+        "why": "FSRS in TypeScript. Drop-in scheduler if Why Loop or Pattern Academy ever needs its own review timing."
+      },
+      {
+        "repo": "open-spaced-repetition/fsrs-optimizer",
+        "why": "Fits FSRS parameters to your real review history. Use once you have a few months of Why Loop cards."
+      },
+      {
+        "repo": "JuliusBrussee/revu-swift",
+        "why": "Open source local-first macOS flashcard app on FSRS. Reference build for MCAT Pattern Academy."
+      }
+    ],
+    "claude-skills": [
+      {
+        "repo": "anthropics/skills",
+        "why": "Anthropic's official skills. The source of truth for how a skill should be written."
+      },
+      {
+        "repo": "travisvn/awesome-claude-skills",
+        "why": "Curated skill list with a Skills vs MCP explainer."
+      },
+      {
+        "repo": "ComposioHQ/awesome-claude-skills",
+        "why": "Largest curated skill list, grouped by category."
+      },
+      {
+        "repo": "hesreallyhim/awesome-claude-code",
+        "why": "Skills, hooks, slash commands and plugins for Claude Code."
+      }
+    ],
+    "mcp-servers": [
+      {
+        "repo": "modelcontextprotocol/servers",
+        "why": "Official MCP server collection. Filesystem, git, fetch and more."
+      },
+      {
+        "repo": "54yyyu/zotero-mcp",
+        "why": "Connects a Zotero library to Claude with semantic search and PDF annotations. Fits Priolo lab reading and thesis citations."
+      }
+    ],
+    "diagrams": [
+      {
+        "repo": "excalidraw/excalidraw-mcp",
+        "why": "Official Excalidraw MCP. Already connected in Claude, so this is here for reference."
+      },
+      {
+        "repo": "yctimlin/mcp_excalidraw",
+        "why": "Persistent live canvas Claude can edit across turns. Upgrade path if one-shot diagrams aren't enough."
+      }
+    ],
+    "deepseek-harness": [
+      {
+        "repo": "coeasy/dsh-go",
+        "why": "Package manager and plugin directory for DeepSeek Harness. Very new with few users, so use it to browse DSH plugins, not to install them yet."
+      }
+    ]
+  }
+}
