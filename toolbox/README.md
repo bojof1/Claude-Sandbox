@@ -46,3 +46,9 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 |---|---|
 | [excalidraw/excalidraw-mcp](https://github.com/excalidraw/excalidraw-mcp) | Official Excalidraw MCP. Already connected in Claude, so this is here for reference. |
 | [yctimlin/mcp_excalidraw](https://github.com/yctimlin/mcp_excalidraw) | Persistent live canvas Claude can edit across turns. Upgrade path if one-shot diagrams aren't enough. |
+
+## DeepSeek Harness  (`deepseek-harness/`)
+
+| Repo | Why it's here |
+|---|---|
+| [coeasy/dsh-go](https://github.com/coeasy/dsh-go) | Package manager and plugin directory for DeepSeek Harness. Very new with few users, so use it to browse DSH plugins, not to install them yet. |

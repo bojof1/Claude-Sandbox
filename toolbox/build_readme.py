@@ -2,7 +2,7 @@ import json, pathlib
 here = pathlib.Path(__file__).parent
 d = json.load(open(here / "tools.json"))
 titles = {"remnote": "RemNote", "spaced-repetition": "Spaced repetition", "claude-skills": "Claude skills",
-          "mcp-servers": "MCP servers", "diagrams": "Diagrams"}
+          "mcp-servers": "MCP servers", "diagrams": "Diagrams", "deepseek-harness": "DeepSeek Harness"}
 out = ["# Toolbox", "",
        "Tools for learning, productivity and organization, sorted by folder. "
        "A weekly scout adds new finds to `tools.json` and rebuilds this page.", "",
