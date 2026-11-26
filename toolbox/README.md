@@ -16,6 +16,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 | [hannesfrank/awesome-remnote](https://github.com/hannesfrank/awesome-remnote) | Running index of RemNote plugins, themes and CSS. Check here first before building something new. |
 | [bjsi/incremental-everything](https://github.com/bjsi/incremental-everything) | Mixes lab papers, notes and video clips into your RemNote review queue in small pieces, so Priolo lab reading gets done alongside your cards. |
 | [melvinmng/remnote-flashcard-notes](https://github.com/melvinmng/remnote-flashcard-notes) | Shows a notes field under each flashcard during review, a natural spot for your Why Loop reasoning. Brand new with one developer, so treat it as a trial. |
+| [Justtolook/RemNote-Statistics-Plugin](https://github.com/Justtolook/RemNote-Statistics-Plugin) | Adds charts and a review heatmap inside RemNote, so you can see which Why Loop and Bubble Map decks are actually getting reviewed. |
 
 ## Spaced repetition  (`spaced-repetition/`)
 
@@ -35,6 +36,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 | [ComposioHQ/awesome-claude-skills](https://github.com/ComposioHQ/awesome-claude-skills) | Largest curated skill list, grouped by category. |
 | [hesreallyhim/awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) | Skills, hooks, slash commands and plugins for Claude Code. |
 | [Imbad0202/academic-research-skills](https://github.com/Imbad0202/academic-research-skills) | Skills that walk a paper from research to draft to peer-style review and revision. Useful for your MAMS thesis and lab write-ups. |
+| [baney75/myelinate](https://github.com/baney75/myelinate) | A Claude Code plugin with 14 Socratic tutoring skills, including flashcards and notes review, worth reading next to Feynman Coach for prompt ideas. New and small, so treat it as a trial. |
 
 ## MCP servers  (`mcp-servers/`)
 
@@ -43,6 +45,7 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 | [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers) | Official MCP server collection. Filesystem, git, fetch and more. |
 | [54yyyu/zotero-mcp](https://github.com/54yyyu/zotero-mcp) | Connects a Zotero library to Claude with semantic search and PDF annotations. Fits Priolo lab reading and thesis citations. |
 | [robert7/remnote-mcp-server](https://github.com/robert7/remnote-mcp-server) | Lets Claude search, read and write your RemNote knowledge base, so skills like Why Loop and Feynman Coach can work straight from your real notes. |
+| [yilewang/llm-for-zotero](https://github.com/yilewang/llm-for-zotero) | A research agent inside Zotero that answers questions across your saved papers with citations, useful for keeping up with Priolo lab reading. |
 
 ## Diagrams  (`diagrams/`)
 
@@ -51,6 +54,8 @@ Run `./pull.sh` to clone everything into `~/Toolbox/<folder>/`. Re-running it up
 | [excalidraw/excalidraw-mcp](https://github.com/excalidraw/excalidraw-mcp) | Official Excalidraw MCP. Already connected in Claude, so this is here for reference. |
 | [yctimlin/mcp_excalidraw](https://github.com/yctimlin/mcp_excalidraw) | Persistent live canvas Claude can edit across turns. Upgrade path if one-shot diagrams aren't enough. |
 | [jgraph/drawio-mcp](https://github.com/jgraph/drawio-mcp) | Official draw.io server that lets Claude build editable pathway and mechanism diagrams you can keep tweaking by hand. |
+| [veelenga/claude-mermaid](https://github.com/veelenga/claude-mermaid) | Lets Claude draw Mermaid diagrams and shows them live as they change, handy for quick pathway or mechanism sketches. |
+| [chempane/chempane](https://github.com/chempane/chempane) | Draws molecules, reaction mechanisms and protein structures from a plain request in Claude Desktop and can export Anki style cards, good for organic chemistry and biochem review. |
 
 ## DeepSeek Harness  (`deepseek-harness/`)
 

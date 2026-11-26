@@ -25,6 +25,10 @@
       {
         "repo": "melvinmng/remnote-flashcard-notes",
         "why": "Shows a notes field under each flashcard during review, a natural spot for your Why Loop reasoning. Brand new with one developer, so treat it as a trial."
+      },
+      {
+        "repo": "Justtolook/RemNote-Statistics-Plugin",
+        "why": "Adds charts and a review heatmap inside RemNote, so you can see which Why Loop and Bubble Map decks are actually getting reviewed."
       }
     ],
     "spaced-repetition": [
@@ -65,6 +69,10 @@
       {
         "repo": "Imbad0202/academic-research-skills",
         "why": "Skills that walk a paper from research to draft to peer-style review and revision. Useful for your MAMS thesis and lab write-ups."
+      },
+      {
+        "repo": "baney75/myelinate",
+        "why": "A Claude Code plugin with 14 Socratic tutoring skills, including flashcards and notes review, worth reading next to Feynman Coach for prompt ideas. New and small, so treat it as a trial."
       }
     ],
     "mcp-servers": [
@@ -79,6 +87,10 @@
       {
         "repo": "robert7/remnote-mcp-server",
         "why": "Lets Claude search, read and write your RemNote knowledge base, so skills like Why Loop and Feynman Coach can work straight from your real notes."
+      },
+      {
+        "repo": "yilewang/llm-for-zotero",
+        "why": "A research agent inside Zotero that answers questions across your saved papers with citations, useful for keeping up with Priolo lab reading."
       }
     ],
     "diagrams": [
@@ -93,6 +105,14 @@
       {
         "repo": "jgraph/drawio-mcp",
         "why": "Official draw.io server that lets Claude build editable pathway and mechanism diagrams you can keep tweaking by hand."
+      },
+      {
+        "repo": "veelenga/claude-mermaid",
+        "why": "Lets Claude draw Mermaid diagrams and shows them live as they change, handy for quick pathway or mechanism sketches."
+      },
+      {
+        "repo": "chempane/chempane",
+        "why": "Draws molecules, reaction mechanisms and protein structures from a plain request in Claude Desktop and can export Anki style cards, good for organic chemistry and biochem review."
       }
     ],
     "deepseek-harness": [
